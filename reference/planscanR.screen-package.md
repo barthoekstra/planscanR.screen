@@ -32,8 +32,8 @@ The general-purpose screening framework of the planscanR family:
   [`selection_learner()`](https://barthoekstra.github.io/planscanR.screen/reference/selection_learner.md).
 
 Reads and writes the planscanR sidecar cache through `planscanR::` (the
-cache owner). The BIOGAIN-specific topics, labels, lexicon, and ensemble
-rule live in planscanR.biogain.
+cache owner). Topics, labels, and keyword lexicons are caller-supplied —
+the framework ships no project-specific defaults.
 
 ## See also
 

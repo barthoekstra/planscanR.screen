@@ -54,8 +54,8 @@ pluggable <code><a href="embedding_model.html">embedding_model()</a></code> (bui
 <li><p><strong>Learned selection</strong> — <code><a href="train_selection_model.html">train_selection_model()</a></code> / <code><a href="predict_selection.html">predict_selection()</a></code>
 over the per-record scores, with a pluggable <code><a href="selection_learner.html">selection_learner()</a></code>.</p></li>
 </ul><p>Reads and writes the planscanR sidecar cache through <code>planscanR::</code> (the cache
-owner). The BIOGAIN-specific topics, labels, lexicon, and ensemble rule live
-in <span class="pkg">planscanR.biogain</span>.</p>
+owner). Topics, labels, and keyword lexicons are caller-supplied — the
+framework ships no project-specific defaults.</p>
     </div>
     <div class="section level2">
     <h2 id="see-also">See also<a class="anchor" aria-label="anchor" href="#see-also"></a></h2>

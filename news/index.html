@@ -38,7 +38,7 @@
 
     <div class="section level2">
 <h2 class="pkg-version" data-toc-text="0.0.0.9000" id="planscanrscreen-0009000">planscanR.screen 0.0.0.9000<a class="anchor" aria-label="anchor" href="#planscanrscreen-0009000"></a></h2>
-<ul><li>Initial release as a standalone package. The scoring, classification, and selection layers were extracted from <code>planscanR</code> when the family split into a pure-R fetcher (<code>planscanR</code>), this general-purpose screening framework, and the BIOGAIN-specific configuration (<code>planscanR.biogain</code>).</li>
+<ul><li>Initial release as a standalone package. The scoring, classification, and selection layers were extracted from <code>planscanR</code> when fetching and screening were split into separate packages: a pure-R fetcher (<code>planscanR</code>) and this general-purpose screening framework.</li>
 <li>
 <strong>Embedding relevance.</strong> <code><a href="../reference/score_records.html">score_records()</a></code> / <code><a href="../reference/score_assessments.html">score_assessments()</a></code> score records against one or more topics by multilingual cosine similarity over a pluggable <code><a href="../reference/embedding_model.html">embedding_model()</a></code>; the built-in backend is <code><a href="../reference/embedding_model_minilm.html">embedding_model_minilm()</a></code> (sentence-transformers MiniLM via reticulate). Records are embedded once per call, so extra topics are essentially free.</li>
 <li>
@@ -48,7 +48,7 @@
 <li>
 <strong>Learned selection.</strong> <code><a href="../reference/train_selection_model.html">train_selection_model()</a></code> / <code><a href="../reference/predict_selection.html">predict_selection()</a></code> learn the keep/drop decision from human review labels over the three signals, with a pluggable tidymodels <code><a href="../reference/selection_learner.html">selection_learner()</a></code> (default logistic regression). Metrics are honest out-of-fold (k-fold CV); <code><a href="../reference/selection_learning_curve.html">selection_learning_curve()</a></code> reports held-out performance as the label pool grows. The tidymodels glue is an optional dependency.</li>
 <li>
-<strong>Config-agnostic by design.</strong> No project-specific topics, labels, or keyword lists ship here — <code>classify_assessments(labels=)</code>, <code>score_keywords(lexicon=)</code>, and the selection-feature functions all take their vocabulary as required arguments. The BIOGAIN sets live in <code>planscanR.biogain</code>.</li>
+<strong>Config-agnostic by design.</strong> No project-specific topics, labels, or keyword lists ship here — <code>classify_assessments(labels=)</code>, <code>score_keywords(lexicon=)</code>, and the selection-feature functions all take their vocabulary as required arguments.</li>
 <li>Reads and writes scores through the <code>planscanR</code> sidecar cache, so screening results survive across sessions and are visible to <code><a href="https://barthoekstra.github.io/planscanR/reference/index_cache.html" class="external-link">planscanR::index_cache()</a></code>.</li>
 </ul></div>
   </main></div>

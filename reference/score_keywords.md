@@ -21,9 +21,7 @@ score_keywords(records, lexicon, text_fn = NULL)
 
 - lexicon:
 
-  Named list of term vectors, one per topic (required). The BIOGAIN
-  lexicon is `biogain_keyword_lexicon()` in the `planscanR.biogain`
-  package.
+  Named list of term vectors, one per topic (required).
 
 - text_fn:
 
@@ -39,7 +37,8 @@ score_keywords(records, lexicon, text_fn = NULL)
 ``` r
 if (FALSE) { # \dontrun{
 recs <- index_cache(country = "nl")
-scored <- score_keywords(recs, lexicon = biogain_keyword_lexicon())
+lexicon <- list(wind = c("wind", "turbine"), solar = c("solar", "pv"))
+scored <- score_keywords(recs, lexicon = lexicon)
 scored[scored$kw_total == 0, "title"] # likely non-energy
 } # }
 ```

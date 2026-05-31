@@ -45,36 +45,44 @@ to use a different one.
 
 Two complementary signals layer on top of the cosine score. Both take
 their vocabulary as an explicit argument — the framework ships no
-project defaults (the BIOGAIN sets live in `planscanR.biogain`):
+project defaults, so you define the candidate labels and keyword terms
+yourself:
 
 ``` r
 
-# Zero-shot classification against a labelled set of candidate classes.
-records <- classify_assessments(
-  records,
-  labels = planscanR.biogain::biogain_classification_labels()
+# Zero-shot classification against a labelled set of candidate classes. Names
+# are stable slugs (used as column suffixes); values are the hypotheses fed to
+# the model. Include explicit negative classes to catch look-alikes.
+labels <- c(
+  wind  = "wind energy project",
+  solar = "solar energy project",
+  other = "not about renewable energy"
 )
+records <- classify_assessments(records, labels = labels)
 
-# A transparent lexical (substring) count over a multilingual lexicon.
-records <- score_keywords(
-  records,
-  lexicon = planscanR.biogain::biogain_keyword_lexicon()
+# A transparent lexical (substring) count over a multilingual lexicon: a named
+# list of term vectors, one per topic.
+lexicon <- list(
+  wind  = c("wind", "turbine", "windpark", "windmolen"),
+  solar = c("solar", "zonne", "photovolta", "pv")
 )
+records <- score_keywords(records, lexicon = lexicon)
 ```
 
 ## Learn a selection model
 
-Given human keep/drop labels (e.g. from the BIOGAIN review app), you can
+Given human keep/drop labels (e.g. exported from a review tool), you can
 train a selection model over the per-record scores instead of
-hand-tuning a rule:
+hand-tuning a rule. Pass the same `topics` and `labels` you scored and
+classified with, so the feature columns line up:
 
 ``` r
 
 model <- train_selection_model(
   records,
   reviews,
-  topics = planscanR.biogain::biogain_assessment_topics(),
-  labels = planscanR.biogain::biogain_classification_labels()
+  topics = c(wind = "wind energy", solar = "solar energy"),
+  labels = labels
 )
 records <- predict_selection(model, records)
 ```
@@ -95,5 +103,7 @@ train/serve skew).
 - [`?train_selection_model`](https://barthoekstra.github.io/planscanR.screen/reference/train_selection_model.md),
   [`?selection_features`](https://barthoekstra.github.io/planscanR.screen/reference/selection_features.md)
   — the learned selection model.
-- **planscanR.biogain** — the BIOGAIN topic/label/keyword config and the
-  `select_assessments()` ensemble rule that combines these signals.
+- [`?embedding_model`](https://barthoekstra.github.io/planscanR.screen/reference/embedding_model.md),
+  [`?classifier`](https://barthoekstra.github.io/planscanR.screen/reference/classifier.md),
+  [`?selection_learner`](https://barthoekstra.github.io/planscanR.screen/reference/selection_learner.md)
+  — plug in your own backends.

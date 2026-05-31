@@ -24,14 +24,15 @@ selection_features(records, topics, labels, include = character(0))
 
 - topics:
 
-  Named topic vector naming the cosine columns (required). The BIOGAIN
-  set is `biogain_assessment_topics()` in `planscanR.biogain`.
+  Named topic vector naming the cosine columns (required) — the same
+  vector you passed to
+  [`score_records()`](https://barthoekstra.github.io/planscanR.screen/reference/score_records.md).
 
 - labels:
 
-  Named classifier-label vector naming the classifier columns
-  (required). The BIOGAIN set is `biogain_classification_labels()` in
-  `planscanR.biogain`.
+  Named classifier-label vector naming the classifier columns (required)
+  — the same vector you passed to
+  [`classify_assessments()`](https://barthoekstra.github.io/planscanR.screen/reference/classify_assessments.md).
 
 - include:
 

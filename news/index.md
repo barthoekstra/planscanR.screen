@@ -3,10 +3,9 @@
 ## planscanR.screen 0.0.0.9000
 
 - Initial release as a standalone package. The scoring, classification,
-  and selection layers were extracted from `planscanR` when the family
-  split into a pure-R fetcher (`planscanR`), this general-purpose
-  screening framework, and the BIOGAIN-specific configuration
-  (`planscanR.biogain`).
+  and selection layers were extracted from `planscanR` when fetching and
+  screening were split into separate packages: a pure-R fetcher
+  (`planscanR`) and this general-purpose screening framework.
 - **Embedding relevance.**
   [`score_records()`](https://barthoekstra.github.io/planscanR.screen/reference/score_records.md)
   /
@@ -46,8 +45,7 @@
 - **Config-agnostic by design.** No project-specific topics, labels, or
   keyword lists ship here — `classify_assessments(labels=)`,
   `score_keywords(lexicon=)`, and the selection-feature functions all
-  take their vocabulary as required arguments. The BIOGAIN sets live in
-  `planscanR.biogain`.
+  take their vocabulary as required arguments.
 - Reads and writes scores through the `planscanR` sidecar cache, so
   screening results survive across sessions and are visible to
   [`planscanR::index_cache()`](https://barthoekstra.github.io/planscanR/reference/index_cache.html).

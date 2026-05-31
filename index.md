@@ -10,9 +10,7 @@ It is the general-purpose **screening** package of the planscanR family.
 Its sibling [planscanR](https://github.com/barthoekstra/planscanR)
 fetches environmental-assessment records from European portals; this
 package decides which of them are worth your attention. Nothing here is
-project-specific: you supply the topics, labels, and keyword lists. The
-BIOGAIN project’s concrete configuration lives in a third sibling,
-`planscanR.biogain`.
+project-specific — you supply the topics, labels, and keyword lists.
 
 ## What it does
 
@@ -34,14 +32,15 @@ testing — without touching the callers.
 
 ## Place in the family
 
-    planscanR  ←──  planscanR.screen  ←──  planscanR.biogain
-      (fetch)        (THIS package)         (BIOGAIN config)
-
-`planscanR.screen` Imports `planscanR` for sidecar cache I/O (it reads
-and writes the scores back onto the records `planscanR` fetched), and
-adds the Python toolchain — via
-[reticulate](https://rstudio.github.io/reticulate/) — that the pure-R
-`planscanR` leaf deliberately avoids.
+`planscanR.screen` builds on
+[planscanR](https://github.com/barthoekstra/planscanR), the pure-R
+package that fetches the records and owns the on-disk cache. This
+package imports it for sidecar cache I/O — it reads records, scores
+them, and writes the scores back onto the same records — and adds the
+Python toolchain (via
+[reticulate](https://rstudio.github.io/reticulate/)) that the fetcher
+deliberately avoids. You can also use it on its own with any tibble of
+text.
 
 ## Installation
 
@@ -109,13 +108,14 @@ See
 [`vignette("scoring")`](https://barthoekstra.github.io/planscanR.screen/articles/scoring.md)
 for the end-to-end walkthrough.
 
-## The BIOGAIN configuration
+## Bring your own vocabulary
 
-This package ships no topics, labels, or keyword lists of its own. The
-BIOGAIN project’s canonical sets — `biogain_assessment_topics()`,
-`biogain_classification_labels()`, `biogain_keyword_lexicon()` — plus
-the ensemble selection rule and the review app live in
-`planscanR.biogain`.
+This package ships no topics, labels, or keyword lists of its own — that
+is what keeps it general-purpose. Every entry point that needs project
+vocabulary takes it as a required argument:
+`score_assessments(topic =)`, `classify_assessments(labels =)`,
+`score_keywords(lexicon =)`, and the selection functions’ `topics =` /
+`labels =`. Define them once and pass them through.
 
 ## License
 

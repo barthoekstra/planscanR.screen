@@ -56,7 +56,7 @@
 <div class="page-header"><h1 id="planscanrscreen">planscanR.screen<a class="anchor" aria-label="anchor" href="#planscanrscreen"></a>
 </h1></div>
 <p><code>planscanR.screen</code> screens a table of text records by how relevant they are to the topics you care about. Give it a tibble with a <code>title</code> and <code>summary</code> (and, optionally, a portal <code>category</code>) plus a few topic phrases, and it scores, classifies, and — once you have human keep/drop labels — learns which records to keep.</p>
-<p>It is the general-purpose <strong>screening</strong> package of the planscanR family. Its sibling <a href="https://github.com/barthoekstra/planscanR" class="external-link">planscanR</a> fetches environmental-assessment records from European portals; this package decides which of them are worth your attention. Nothing here is project-specific: you supply the topics, labels, and keyword lists. The BIOGAIN project’s concrete configuration lives in a third sibling, <code>planscanR.biogain</code>.</p>
+<p>It is the general-purpose <strong>screening</strong> package of the planscanR family. Its sibling <a href="https://github.com/barthoekstra/planscanR" class="external-link">planscanR</a> fetches environmental-assessment records from European portals; this package decides which of them are worth your attention. Nothing here is project-specific — you supply the topics, labels, and keyword lists.</p>
 <div class="section level2">
 <h2 id="what-it-does">What it does<a class="anchor" aria-label="anchor" href="#what-it-does"></a>
 </h2>
@@ -104,25 +104,23 @@
 <div class="section level2">
 <h2 id="place-in-the-family">Place in the family<a class="anchor" aria-label="anchor" href="#place-in-the-family"></a>
 </h2>
-<pre><code>planscanR  ←──  planscanR.screen  ←──  planscanR.biogain
-  (fetch)        (THIS package)         (BIOGAIN config)</code></pre>
-<p><code>planscanR.screen</code> Imports <code>planscanR</code> for sidecar cache I/O (it reads and writes the scores back onto the records <code>planscanR</code> fetched), and adds the Python toolchain — via <a href="https://rstudio.github.io/reticulate/" class="external-link">reticulate</a> — that the pure-R <code>planscanR</code> leaf deliberately avoids.</p>
+<p><code>planscanR.screen</code> builds on <a href="https://github.com/barthoekstra/planscanR" class="external-link">planscanR</a>, the pure-R package that fetches the records and owns the on-disk cache. This package imports it for sidecar cache I/O — it reads records, scores them, and writes the scores back onto the same records — and adds the Python toolchain (via <a href="https://rstudio.github.io/reticulate/" class="external-link">reticulate</a>) that the fetcher deliberately avoids. You can also use it on its own with any tibble of text.</p>
 </div>
 <div class="section level2">
 <h2 id="installation">Installation<a class="anchor" aria-label="anchor" href="#installation"></a>
 </h2>
-<div class="sourceCode" id="cb2"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb1"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="co"># install.packages("pak")</span></span>
 <span><span class="fu">pak</span><span class="fu">::</span><span class="fu"><a href="https://pak.r-lib.org/reference/pak.html" class="external-link">pak</a></span><span class="op">(</span><span class="st">"barthoekstra/planscanR.screen"</span><span class="op">)</span></span></code></pre></div>
 <p>The embedding and classification backends run small Python models through reticulate. The package declares its Python dependencies (<code>sentence-transformers</code>, <code>transformers</code>, <code>torch</code>, …) on load, so reticulate provisions them on first use; no manual <code>py_install()</code> is required. The learned-selection layer additionally needs the tidymodels glue, which is optional:</p>
-<div class="sourceCode" id="cb3"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb2"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="co"># Only if you train a selection model:</span></span>
 <span><span class="fu"><a href="https://rdrr.io/r/utils/install.packages.html" class="external-link">install.packages</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"parsnip"</span>, <span class="st">"recipes"</span>, <span class="st">"rsample"</span>, <span class="st">"workflows"</span><span class="op">)</span><span class="op">)</span></span></code></pre></div>
 </div>
 <div class="section level2">
 <h2 id="quick-start">Quick start<a class="anchor" aria-label="anchor" href="#quick-start"></a>
 </h2>
-<div class="sourceCode" id="cb4"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb3"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://github.com/barthoekstra/planscanR.screen" class="external-link">planscanR.screen</a></span><span class="op">)</span></span>
 <span></span>
 <span><span class="co"># Records usually come from planscanR, but any tibble with title/summary works.</span></span>
@@ -145,7 +143,7 @@
 <h3 id="learn-a-selection-model">Learn a selection model<a class="anchor" aria-label="anchor" href="#learn-a-selection-model"></a>
 </h3>
 <p>With human keep/drop labels (e.g. from a review tool), train a model over the per-record scores instead of hand-tuning a threshold rule:</p>
-<div class="sourceCode" id="cb5"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb4"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">model</span>   <span class="op">&lt;-</span> <span class="fu"><a href="reference/train_selection_model.html">train_selection_model</a></span><span class="op">(</span><span class="va">records</span>, <span class="va">reviews</span>, topics <span class="op">=</span> <span class="va">topics</span>, labels <span class="op">=</span> <span class="va">labels</span><span class="op">)</span></span>
 <span><span class="va">model</span><span class="op">$</span><span class="va">cv</span>                                   <span class="co"># honest out-of-fold metrics</span></span>
 <span><span class="va">records</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/predict_selection.html">predict_selection</a></span><span class="op">(</span><span class="va">model</span>, <span class="va">records</span><span class="op">)</span>  <span class="co"># adds select_prob + selected_model</span></span></code></pre></div>
@@ -154,9 +152,9 @@
 </div>
 </div>
 <div class="section level2">
-<h2 id="the-biogain-configuration">The BIOGAIN configuration<a class="anchor" aria-label="anchor" href="#the-biogain-configuration"></a>
+<h2 id="bring-your-own-vocabulary">Bring your own vocabulary<a class="anchor" aria-label="anchor" href="#bring-your-own-vocabulary"></a>
 </h2>
-<p>This package ships no topics, labels, or keyword lists of its own. The BIOGAIN project’s canonical sets — <code>biogain_assessment_topics()</code>, <code>biogain_classification_labels()</code>, <code>biogain_keyword_lexicon()</code> — plus the ensemble selection rule and the review app live in <code>planscanR.biogain</code>.</p>
+<p>This package ships no topics, labels, or keyword lists of its own — that is what keeps it general-purpose. Every entry point that needs project vocabulary takes it as a required argument: <code>score_assessments(topic =)</code>, <code>classify_assessments(labels =)</code>, <code>score_keywords(lexicon =)</code>, and the selection functions’ <code>topics =</code> / <code>labels =</code>. Define them once and pass them through.</p>
 </div>
 <div class="section level2">
 <h2 id="license">License<a class="anchor" aria-label="anchor" href="#license"></a>
