@@ -45,6 +45,7 @@ reference:
   - selection_features
   - selection_feature_names
   - selection_learner
+  - selection_learner_logistic
   - selection_learners
   - train_selection_model
   - predict_selection
