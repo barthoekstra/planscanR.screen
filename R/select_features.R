@@ -1,11 +1,11 @@
 # Feature contract for the learned selection model.
 #
 # A single function turns scored + classified records (from get_assessments(),
-# index_cache(), or the review app's snapshot) into the model matrix used to
-# LEARN the BIOGAIN selection decision from human keep/drop labels. Both
-# training and prediction go through `selection_features()` so there is no
-# train/serve skew: whatever columns the learner saw at fit time are rebuilt the
-# same way at predict time.
+# index_cache(), or a review-app snapshot) into the model matrix used to LEARN
+# the keep/drop selection decision from human review labels. Both training and
+# prediction go through `selection_features()` so there is no train/serve skew:
+# whatever columns the learner saw at fit time are rebuilt the same way at
+# predict time.
 #
 # The default feature set is deliberately country-agnostic — the per-topic
 # cosine scores and per-label classifier scores are language-independent
@@ -17,9 +17,9 @@
 #' Names of the features the selection model is trained on.
 #'
 #' The default set is the three numeric relevance signals already persisted on
-#' every sidecar: one cosine score per BIOGAIN topic
-#' (`relevance_score_<slug>`), one zero-shot classifier score per candidate
-#' label (`class_score_<slug>`), and the keyword total (`kw_total`).
+#' every sidecar: one cosine score per topic (`relevance_score_<slug>`), one
+#' zero-shot classifier score per candidate label (`class_score_<slug>`), and
+#' the keyword total (`kw_total`).
 #'
 #' @param topics Named topic vector naming the cosine columns (required). The
 #'   BIOGAIN set is `biogain_assessment_topics()` in `planscanR.biogain`.

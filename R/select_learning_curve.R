@@ -1,4 +1,4 @@
-# Learning curve for the learned BIOGAIN selection model.
+# Learning curve for the learned selection model.
 #
 # Estimate how the model's held-out F1 / precision / recall improve as the number
 # of human training labels grows, so the user can see where adding more labels
@@ -18,10 +18,11 @@
 #' shows where the curve flattens.
 #'
 #' @param records A scored + classified tibble (from [planscanR::get_assessments()],
-#'   [planscanR::index_cache()], or the review-app snapshot) carrying the
+#'   [planscanR::index_cache()], or a review-app snapshot) carrying the
 #'   [selection_features()] columns.
-#' @param reviews The review-decision tibble (the app's `reviews.csv`), with
-#'   `document_id`, `country`, `decision`, `source`, `reviewed_at`.
+#' @param reviews The review-decision tibble (e.g. a review tool's
+#'   `reviews.csv`), with `document_id`, `country`, `decision`, `source`,
+#'   `reviewed_at`.
 #' @param topics,labels The topic and classifier-label vectors naming the
 #'   feature columns (required); see [selection_feature_names()].
 #' @param learner A [selection_learner]. Defaults to

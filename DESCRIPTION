@@ -21,7 +21,6 @@ Depends:
 Imports:
     cli (>= 3.6.0),
     dplyr (>= 1.1.0),
-    jsonlite (>= 1.8.0),
     planscanR,
     reticulate (>= 1.34),
     rlang (>= 1.1.0),
@@ -37,6 +36,7 @@ Suggests:
     withr,
     workflows
 Config/testthat/edition: 3
+Config/Needs/website: pkgdown
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
 RoxygenNote: 7.3.3

@@ -11,9 +11,9 @@ selection_learner_logistic()
 A \code{planscanR_selection_learner}.
 }
 \description{
-Logistic regression on the base-R \code{glm} engine — the default the BIOGAIN
-selection model trains. Needs only the tidymodels glue (parsnip / recipes /
-rsample / workflows), no extra modelling backend.
+Logistic regression on the base-R \code{glm} engine — the default
+\code{\link[=train_selection_model]{train_selection_model()}} fits. Needs only the tidymodels glue (parsnip /
+recipes / rsample / workflows), no extra modelling backend.
 }
 \examples{
 selection_learner_logistic()

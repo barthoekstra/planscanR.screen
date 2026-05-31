@@ -1,11 +1,12 @@
-# BIOGAIN zero-shot classification: candidate labels + the offline driver
-# that classifies records and (optionally) persists the verdict to sidecars.
+# Zero-shot classification driver: classify records against caller-supplied
+# candidate labels and (optionally) persist the verdict to sidecars.
 #
 # This is the "select later" half of the harvest-broad-classify-later design:
 # it reads records that were already scanned + scored (from get_assessments()
-# or index_cache()) and adds a calibrated, multi-class verdict that includes
-# explicit NEGATIVE classes — which is what filters out the planning /
-# water-management false-positives that a bare cosine cutoff lets through.
+# or index_cache()) and adds a calibrated, multi-class verdict. Because the
+# label set can include explicit NEGATIVE classes, the classifier filters out
+# the look-alikes that a bare cosine cutoff lets through (e.g. generic planning
+# or water-management records, when the negatives name them).
 
 #' Build the text fed to the classifier for one record set.
 #'

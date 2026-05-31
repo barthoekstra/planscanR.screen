@@ -1,4 +1,4 @@
-# Pluggable learner framework for the BIOGAIN selection model.
+# Pluggable learner framework for the learned selection model.
 #
 # A "selection learner" bundles a parsnip model specification with the engine
 # package it needs, so [train_selection_model()] can fit it inside a tidymodels
@@ -54,9 +54,9 @@ selection_learner <- function(name, spec, engine_pkg = character(0), recipe_fn =
 
 #' Built-in selection learner.
 #'
-#' Logistic regression on the base-R `glm` engine — the default the BIOGAIN
-#' selection model trains. Needs only the tidymodels glue (parsnip / recipes /
-#' rsample / workflows), no extra modelling backend.
+#' Logistic regression on the base-R `glm` engine — the default
+#' [train_selection_model()] fits. Needs only the tidymodels glue (parsnip /
+#' recipes / rsample / workflows), no extra modelling backend.
 #'
 #' @return A `planscanR_selection_learner`.
 #' @name selection_learners_builtin

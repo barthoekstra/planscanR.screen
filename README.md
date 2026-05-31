@@ -1,0 +1,110 @@
+# planscanR.screen
+
+`planscanR.screen` screens a table of text records by how relevant they are to
+the topics you care about. Give it a tibble with a `title` and `summary` (and,
+optionally, a portal `category`) plus a few topic phrases, and it scores,
+classifies, and — once you have human keep/drop labels — learns which records to
+keep.
+
+It is the general-purpose **screening** package of the planscanR family. Its
+sibling [planscanR](https://github.com/barthoekstra/planscanR) fetches
+environmental-assessment records from European portals; this package decides
+which of them are worth your attention. Nothing here is project-specific: you
+supply the topics, labels, and keyword lists. The BIOGAIN project's concrete
+configuration lives in a third sibling, `planscanR.biogain`.
+
+## What it does
+
+Four independent layers, each usable on its own:
+
+| Layer | Function | What it gives you |
+|---|---|---|
+| **Embedding relevance** | `score_assessments()` / `score_records()` | A cosine-similarity score (−1…1) per topic, from a multilingual sentence-embedding model. One English topic phrase matches Dutch, German, or Danish text — no per-language translation. |
+| **Zero-shot classification** | `classify_assessments()` | A probability per candidate label from a local NLI model, including explicit *negative* classes that filter out look-alikes a bare cosine cutoff lets through. |
+| **Keyword lexicon** | `score_keywords()` | A transparent multilingual substring count — the explainable counterpart to the two semantic signals. |
+| **Learned selection** | `train_selection_model()` / `predict_selection()` | A tidymodels classifier that *learns* the keep/drop decision from human review labels over the three signals above, instead of hand-tuning a rule. |
+
+The embedding and classification backends are pluggable S3 interfaces
+(`embedding_model()`, `classifier()`, `selection_learner()`), so you can swap in
+a different model — or a deterministic mock for testing — without touching the
+callers.
+
+## Place in the family
+
+```
+planscanR  ←──  planscanR.screen  ←──  planscanR.biogain
+  (fetch)        (THIS package)         (BIOGAIN config)
+```
+
+`planscanR.screen` Imports `planscanR` for sidecar cache I/O (it reads and
+writes the scores back onto the records `planscanR` fetched), and adds the
+Python toolchain — via [reticulate](https://rstudio.github.io/reticulate/) — that
+the pure-R `planscanR` leaf deliberately avoids.
+
+## Installation
+
+```r
+# install.packages("pak")
+pak::pak("barthoekstra/planscanR.screen")
+```
+
+The embedding and classification backends run small Python models through
+reticulate. The package declares its Python dependencies (`sentence-transformers`,
+`transformers`, `torch`, …) on load, so reticulate provisions them on first use;
+no manual `py_install()` is required. The learned-selection layer additionally
+needs the tidymodels glue, which is optional:
+
+```r
+# Only if you train a selection model:
+install.packages(c("parsnip", "recipes", "rsample", "workflows"))
+```
+
+## Quick start
+
+```r
+library(planscanR.screen)
+
+# Records usually come from planscanR, but any tibble with title/summary works.
+records <- planscanR::index_cache(country = "nl")
+
+# 1. Score each record against one or more topics.
+records <- score_assessments(
+  records,
+  topic = c(wind = "wind energy", solar = "solar energy")
+)
+records$relevance_score_wind
+
+# 2. Layer on a zero-shot classifier and a keyword count. Both take their
+#    vocabulary explicitly — there are no project defaults in this package.
+labels  <- c(wind = "wind energy project", other = "unrelated to energy")
+lexicon <- list(wind = c("wind", "turbine", "windpark"))
+records <- classify_assessments(records, labels = labels)
+records <- score_keywords(records, lexicon = lexicon)
+```
+
+### Learn a selection model
+
+With human keep/drop labels (e.g. from a review tool), train a model over the
+per-record scores instead of hand-tuning a threshold rule:
+
+```r
+model   <- train_selection_model(records, reviews, topics = topics, labels = labels)
+model$cv                                   # honest out-of-fold metrics
+records <- predict_selection(model, records)  # adds select_prob + selected_model
+```
+
+The model stores its `topics`/`labels`, so `predict_selection()` rebuilds exactly
+the feature frame it was trained on — no train/serve skew.
+
+See `vignette("scoring")` for the end-to-end walkthrough.
+
+## The BIOGAIN configuration
+
+This package ships no topics, labels, or keyword lists of its own. The BIOGAIN
+project's canonical sets — `biogain_assessment_topics()`,
+`biogain_classification_labels()`, `biogain_keyword_lexicon()` — plus the
+ensemble selection rule and the review app live in `planscanR.biogain`.
+
+## License
+
+GPL (>= 3).

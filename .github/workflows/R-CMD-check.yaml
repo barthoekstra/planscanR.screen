@@ -26,8 +26,7 @@ jobs:
 
       - uses: r-lib/actions/setup-r-dependencies@v2
         with:
-          # planscanR (and, once it exists, planscanR.screen) resolve from the
-          # Remotes field in DESCRIPTION.
+          # planscanR resolves from the Remotes field in DESCRIPTION.
           extra-packages: any::rcmdcheck
           needs: check
 

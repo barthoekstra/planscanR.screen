@@ -3,6 +3,12 @@ url: https://barthoekstra.github.io/planscanR.screen/
 template:
   bootstrap: 5
 
+articles:
+- title: Articles
+  navbar: ~
+  contents:
+  - scoring
+
 reference:
 - title: Relevance scoring
   desc: >

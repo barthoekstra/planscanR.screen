@@ -45,11 +45,11 @@ planscanR  ←──  planscanR.screen  ←──  planscanR.biogain
 - **`planscanR.screen`** — Imports `planscanR`; adds `reticulate` and (Suggests)
   the tidymodels glue. Config-agnostic.
 - `planscanR.biogain` — Imports both; holds the BIOGAIN topics/labels/lexicon,
-  ensemble select rule, review Shiny app, Yoda sync, runbook. (Its `AGENTS.md`
-  is created in Phase 1 — once present, defer there for project specifics.)
+  ensemble select rule, review Shiny app, Yoda sync, runbook. Defer to its
+  [../planscanR.biogain/AGENTS.md](../planscanR.biogain/AGENTS.md) for project
+  specifics.
 
-Parent-level orientation: [../CLAUDE.md](../CLAUDE.md) (and
-`../MIGRATION_PLAN.md` while the migration is in progress).
+Parent-level orientation: [../CLAUDE.md](../CLAUDE.md).
 
 ## Architecture / key files
 
@@ -103,7 +103,8 @@ Parent-level orientation: [../CLAUDE.md](../CLAUDE.md) (and
   resolve the cache root only via `planscanR::cache_dir_default()`. Never
   reimplement cache-root resolution or the sidecar JSON schema (currently v2,
   asserted on read by planscanR's reader). A schema change needs a version bump
-  and matching reads in all three packages — see §4 of the migration plan.
+  and matching reads in all three packages — see the sidecar-schema note in the
+  parent [../CLAUDE.md](../CLAUDE.md).
 - **S3 generics are owned here.** `embedding_model` / `embed_text` /
   `model_name` / `supported_languages`, `classifier` / `classify_text` /
   `classifier_name`, and `selection_learner` are *defined* in this package. Add
@@ -138,8 +139,8 @@ Parent-level orientation: [../CLAUDE.md](../CLAUDE.md) (and
 
 ## Pointers
 
-- Generics-ownership table and the sidecar-schema contract: §4 of the parent
-  `MIGRATION_PLAN.md`.
+- Generics-ownership table and the sidecar-schema contract: the parent
+  [../CLAUDE.md](../CLAUDE.md).
 - Cosine scoring entry point: `score_records()` /
   `score_assessments(write_sidecar = TRUE)`.
 - Selection model round-trip: `train_selection_model()` →

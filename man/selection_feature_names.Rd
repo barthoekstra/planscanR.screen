@@ -24,9 +24,9 @@ A character vector of feature column names, in a stable order.
 }
 \description{
 The default set is the three numeric relevance signals already persisted on
-every sidecar: one cosine score per BIOGAIN topic
-(\verb{relevance_score_<slug>}), one zero-shot classifier score per candidate
-label (\verb{class_score_<slug>}), and the keyword total (\code{kw_total}).
+every sidecar: one cosine score per topic (\verb{relevance_score_<slug>}), one
+zero-shot classifier score per candidate label (\verb{class_score_<slug>}), and
+the keyword total (\code{kw_total}).
 }
 \examples{
 \dontrun{

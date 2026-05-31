@@ -1,29 +1,25 @@
-# Train / predict / evaluate the learned BIOGAIN selection model.
+# Train / predict / evaluate the learned selection model.
 #
-# This is the supervised counterpart to the hand-tuned select_assessments()
-# rule: instead of OR-ing three signals at fixed thresholds, it LEARNS the
-# keep/drop decision from human review labels (reviews.csv) over the per-record
-# scores already on the sidecars (see selection_features()).
+# This is the supervised alternative to a hand-tuned threshold rule: instead of
+# OR-ing the three signals at fixed cutoffs, it LEARNS the keep/drop decision
+# from human review labels over the per-record scores already on the sidecars
+# (see selection_features()).
 #
 # Honest evaluation is the whole point. Metrics reported here are
 # OUT-OF-FOLD: every record is scored by a model that did NOT see it in
-# training (k-fold CV), so they're directly comparable to the hand rule's
-# selection_vs_human() metrics on the same review set — no train-on-test
-# inflation. By default both training and CV run on the unbiased random sample
-# (`source == "random"`).
-#
-# The trainer is intentionally NOT wired into data-raw/biogain_acquire.R yet:
-# we first want to see whether a learned gate beats the heuristic. Once it does,
-# select_assessments() / the runbook can gate on predict_selection().
+# training (k-fold CV), so there is no train-on-test inflation and they compare
+# directly against any hand-rule baseline on the same review set. By default
+# both training and CV run on the unbiased random sample (`source == "random"`).
 
 #' Train the learned selection model from human review labels.
 #'
 #' @param records A scored + classified tibble (from [planscanR::get_assessments()],
-#'   [planscanR::index_cache()], or the review-app snapshot) carrying the
+#'   [planscanR::index_cache()], or a review-app snapshot) carrying the
 #'   [selection_features()] columns. Only records that also appear in `reviews`
 #'   with a keep/drop decision are used for training.
-#' @param reviews The review-decision tibble (the app's `reviews.csv`), with
-#'   `document_id`, `country`, `decision`, `source`, `reviewed_at`.
+#' @param reviews The review-decision tibble (e.g. a review tool's
+#'   `reviews.csv`), with `document_id`, `country`, `decision`, `source`,
+#'   `reviewed_at`.
 #' @param topics,labels The topic and classifier-label vectors naming the
 #'   feature columns (required); see [selection_feature_names()]. Stored on the
 #'   returned model so [predict_selection()] rebuilds the same feature frame.
@@ -128,8 +124,9 @@ train_selection_model <- function(
 #' automated-vs-human comparison, so a disagreement never silently becomes a
 #' label.
 #'
-#' @param reviews The review-decision tibble (e.g. the app's `reviews.csv`),
-#'   with `document_id`, `country`, `decision`, `reviewer`, `reviewed_at`.
+#' @param reviews The review-decision tibble (e.g. a review tool's
+#'   `reviews.csv`), with `document_id`, `country`, `decision`, `reviewer`,
+#'   `reviewed_at`.
 #' @param decisions Decisions treated as a verdict. Default `c("keep", "drop")`
 #'   (so `"unsure"` rows are ignored).
 #' @return A tibble with one row per agreed record: `document_id`, `country`,
@@ -280,8 +277,9 @@ cv_oof_predictions <- function(learner, dat, feature_names, v = 5L, repeats = 1L
 }
 
 # Confusion counts + precision/recall/F1 of a keep-probability vector against
-# the human truth at a given threshold. Same shape as funnel.R's
-# selection_vs_human() so the dashboard formats both rows identically.
+# the human truth at a given threshold. The one-row tibble shape (n_reviewed,
+# tp/fp/fn/tn, precision/recall/f1) is reused by selection_cv_metrics() and the
+# learning curve so every metrics row formats identically.
 #' @noRd
 selection_metrics_from_oof <- function(oof, threshold = 0.5) {
   if (is.null(oof) || nrow(oof) == 0L) {
@@ -441,7 +439,7 @@ print.planscanR_selection_model <- function(x, ...) {
   invisible(x)
 }
 
-# Parse the review store's ISO-8601 "T" timestamp (mirrors the app's store.R).
+# Parse the review store's ISO-8601 "T" timestamp into POSIXct (UTC).
 #' @noRd
 parse_reviewed_at_chr <- function(x) {
   if (inherits(x, "POSIXct")) {

@@ -7,8 +7,9 @@
 consensus_reviews(reviews, decisions = c("keep", "drop"))
 }
 \arguments{
-\item{reviews}{The review-decision tibble (e.g. the app's \code{reviews.csv}),
-with \code{document_id}, \code{country}, \code{decision}, \code{reviewer}, \code{reviewed_at}.}
+\item{reviews}{The review-decision tibble (e.g. a review tool's
+\code{reviews.csv}), with \code{document_id}, \code{country}, \code{decision}, \code{reviewer},
+\code{reviewed_at}.}
 
 \item{decisions}{Decisions treated as a verdict. Default \code{c("keep", "drop")}
 (so \code{"unsure"} rows are ignored).}
