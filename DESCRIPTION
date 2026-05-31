@@ -1,0 +1,42 @@
+Package: planscanR.screen
+Title: Score, Classify, and Select Text Records by Topic Relevance
+Version: 0.0.0.9000
+Authors@R:
+    person("Bart", "Hoekstra", email = "mail@barthoekstra.nl", role = c("aut", "cre"))
+Description: A general-purpose framework for screening text records by topic
+    relevance: multilingual embedding cosine scoring, zero-shot
+    classification, a lexical keyword layer, and a learned selection model
+    over human keep/drop labels. Built for the planscanR family
+    (environmental-assessment records) but usable with any tibble of text and
+    a topic vector. Brings in the Python toolchain (via reticulate) that the
+    leaf planscanR fetcher deliberately avoids.
+License: GPL (>= 3)
+URL: https://github.com/barthoekstra/planscanR.screen,
+    https://barthoekstra.github.io/planscanR.screen/
+BugReports: https://github.com/barthoekstra/planscanR.screen/issues
+Remotes:
+    barthoekstra/planscanR
+Depends:
+    R (>= 4.1)
+Imports:
+    cli (>= 3.6.0),
+    dplyr (>= 1.1.0),
+    jsonlite (>= 1.8.0),
+    planscanR,
+    reticulate (>= 1.34),
+    rlang (>= 1.1.0),
+    tibble (>= 3.2.0)
+Suggests:
+    covr,
+    knitr,
+    parsnip,
+    recipes,
+    rmarkdown,
+    rsample,
+    testthat (>= 3.2.0),
+    workflows
+Config/testthat/edition: 3
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.3
+VignetteBuilder: knitr
