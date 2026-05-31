@@ -1,0 +1,59 @@
+url: https://barthoekstra.github.io/planscanR.screen/
+
+template:
+  bootstrap: 5
+
+reference:
+- title: Relevance scoring
+  desc: >
+    Score records by semantic similarity to one or more topics, over a
+    pluggable embedding-model interface.
+  contents:
+  - score_assessments
+  - score_records
+  - embedding_model
+  - embedding_model_minilm
+  - embed_text
+  - model_name
+  - supported_languages
+  - reset_embedding_cache
+  - reset_relevance_warnings
+
+- title: Classification
+  desc: >
+    Assign classes to records with a zero-shot model, over a pluggable
+    classifier interface. Labels are caller-supplied (no project defaults).
+  contents:
+  - classify_assessments
+  - classifier
+  - classify_model_zeroshot
+  - classify_text
+  - classifier_name
+  - reset_classifier_cache
+
+- title: Keyword scoring
+  desc: >
+    A transparent lexical (substring) signal over a caller-supplied lexicon.
+  contents:
+  - score_keywords
+
+- title: Learned selection model
+  desc: >
+    Learn the keep/drop decision from human review labels over the per-record
+    scores, with a pluggable tidymodels learner.
+  contents:
+  - selection_features
+  - selection_feature_names
+  - selection_learner
+  - selection_learners
+  - train_selection_model
+  - predict_selection
+  - selection_cv_metrics
+  - selection_learning_curve
+  - learning_curve_summary
+  - consensus_reviews
+  - save_selection_model
+
+- title: Package
+  contents:
+  - planscanR.screen-package
