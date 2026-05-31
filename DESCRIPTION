@@ -34,6 +34,7 @@ Suggests:
     rmarkdown,
     rsample,
     testthat (>= 3.2.0),
+    withr,
     workflows
 Config/testthat/edition: 3
 Encoding: UTF-8

@@ -13,6 +13,6 @@ supported_languages(model)
 Character vector of ISO-639-1 codes.
 }
 \description{
-Used by \code{\link[planscanR:score_records]{planscanR::score_records()}} to warn (one-shot per language/model) when a
+Used by \code{\link[=score_records]{score_records()}} to warn (one-shot per language/model) when a
 record's country language falls outside the model's supported set.
 }

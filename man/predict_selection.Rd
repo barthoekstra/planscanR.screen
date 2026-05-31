@@ -9,7 +9,7 @@ predict_selection(model, records, threshold = NULL)
 \arguments{
 \item{model}{A \code{planscanR_selection_model}.}
 
-\item{records}{A tibble carrying the \code{\link[planscanR:selection_features]{planscanR::selection_features()}} columns.}
+\item{records}{A tibble carrying the \code{\link[=selection_features]{selection_features()}} columns.}
 
 \item{threshold}{Probability cutoff (defaults to the model's own).}
 }
@@ -19,7 +19,7 @@ predict_selection(model, records, threshold = NULL)
 \description{
 Adds two columns: \code{select_prob} (the model's P(keep)) and \code{selected_model}
 (logical, \code{select_prob >= threshold}). Network-free — it reuses the per-record
-scores already on the sidecars via \code{\link[planscanR:selection_features]{planscanR::selection_features()}}.
+scores already on the sidecars via \code{\link[=selection_features]{selection_features()}}.
 }
 \examples{
 \dontrun{

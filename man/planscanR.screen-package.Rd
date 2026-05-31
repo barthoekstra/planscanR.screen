@@ -10,14 +10,14 @@ The general-purpose screening framework of the planscanR family:
 }
 \details{
 \itemize{
-\item \strong{Relevance scoring} — \code{\link[planscanR:score_assessments]{planscanR::score_assessments()}} / \code{\link[planscanR:score_records]{planscanR::score_records()}} over a
-pluggable \code{\link[planscanR:embedding_model]{planscanR::embedding_model()}} (built-in MiniLM backend
-\code{\link[planscanR:embedding_model_minilm]{planscanR::embedding_model_minilm()}}).
-\item \strong{Zero-shot classification} — \code{\link[planscanR:classify_assessments]{planscanR::classify_assessments()}} over a pluggable
-\code{\link[planscanR:classifier]{planscanR::classifier()}} (built-in \code{\link[planscanR:classify_model_zeroshot]{planscanR::classify_model_zeroshot()}}).
-\item \strong{Lexical keywords} — \code{\link[planscanR:score_keywords]{planscanR::score_keywords()}} over a caller-supplied lexicon.
-\item \strong{Learned selection} — \code{\link[planscanR:train_selection_model]{planscanR::train_selection_model()}} / \code{\link[planscanR:predict_selection]{planscanR::predict_selection()}}
-over the per-record scores, with a pluggable \code{\link[planscanR:selection_learner]{planscanR::selection_learner()}}.
+\item \strong{Relevance scoring} — \code{\link[=score_assessments]{score_assessments()}} / \code{\link[=score_records]{score_records()}} over a
+pluggable \code{\link[=embedding_model]{embedding_model()}} (built-in MiniLM backend
+\code{\link[=embedding_model_minilm]{embedding_model_minilm()}}).
+\item \strong{Zero-shot classification} — \code{\link[=classify_assessments]{classify_assessments()}} over a pluggable
+\code{\link[=classifier]{classifier()}} (built-in \code{\link[=classify_model_zeroshot]{classify_model_zeroshot()}}).
+\item \strong{Lexical keywords} — \code{\link[=score_keywords]{score_keywords()}} over a caller-supplied lexicon.
+\item \strong{Learned selection} — \code{\link[=train_selection_model]{train_selection_model()}} / \code{\link[=predict_selection]{predict_selection()}}
+over the per-record scores, with a pluggable \code{\link[=selection_learner]{selection_learner()}}.
 }
 
 Reads and writes the planscanR sidecar cache through \verb{planscanR::} (the cache

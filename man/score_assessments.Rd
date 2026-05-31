@@ -9,10 +9,10 @@ score_assessments(records, topic, model = NULL, write_sidecar = FALSE)
 \arguments{
 \item{records}{A tibble in the planscanR result shape.}
 
-\item{topic}{Single string or named character vector. See \code{\link[planscanR:score_records]{planscanR::score_records()}}.}
+\item{topic}{Single string or named character vector. See \code{\link[=score_records]{score_records()}}.}
 
 \item{model}{A \code{planscanR_embedding_model}. Defaults to
-\code{\link[planscanR:embedding_model_minilm]{planscanR::embedding_model_minilm()}}.}
+\code{\link[=embedding_model_minilm]{embedding_model_minilm()}}.}
 
 \item{write_sidecar}{If \code{TRUE}, every scored record's sidecar JSON is
 re-written with the merged scores. Default \code{FALSE} (in-memory only).}
@@ -22,7 +22,7 @@ The input tibble with the additional \verb{relevance_score_*} columns
 (and \code{relevance_model}).
 }
 \description{
-Thin wrapper over \code{\link[planscanR:score_records]{planscanR::score_records()}} tuned for the case where you already
+Thin wrapper over \code{\link[=score_records]{score_records()}} tuned for the case where you already
 have a tibble of records (from \code{\link[planscanR:get_assessments]{planscanR::get_assessments()}} or \code{\link[planscanR:index_cache]{planscanR::index_cache()}}) and
 want to add — or refresh — relevance scores without re-fetching any portal
 data. Optionally writes the updated scores back into the on-disk sidecars

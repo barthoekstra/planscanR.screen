@@ -7,7 +7,7 @@
 learning_curve_summary(curve)
 }
 \arguments{
-\item{curve}{The long tibble returned by \code{\link[planscanR:selection_learning_curve]{planscanR::selection_learning_curve()}}.}
+\item{curve}{The long tibble returned by \code{\link[=selection_learning_curve]{selection_learning_curve()}}.}
 }
 \value{
 A tibble with one row per \code{size} (or per (country, size) when the

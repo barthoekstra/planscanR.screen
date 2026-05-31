@@ -29,7 +29,7 @@ A tibble of \code{document_id}, \code{country}, and the feature columns, with a
 }
 \description{
 Produces a tibble carrying the record keys (\code{document_id}, \code{country}) plus
-one column per feature in \code{\link[planscanR:selection_feature_names]{planscanR::selection_feature_names()}}. Missing or
+one column per feature in \code{\link[=selection_feature_names]{selection_feature_names()}}. Missing or
 non-finite numeric features are filled with \code{0} (an unscored / unclassified
 record reads as "no signal"), so the frame is fully determined by the
 records and the feature spec — the key property that keeps training and

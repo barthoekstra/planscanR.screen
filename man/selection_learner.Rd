@@ -14,10 +14,10 @@ and shown in the app.}
 \code{parsnip::logistic_reg()}), OR — preferably — a zero-argument function that
 \emph{returns} one. The function form keeps construction lazy, so a learner can
 be created (and listed in a UI) without parsnip installed; the spec is only
-built at fit time, behind the \code{\link[planscanR:train_selection_model]{planscanR::train_selection_model()}} dependency check.}
+built at fit time, behind the \code{\link[=train_selection_model]{train_selection_model()}} dependency check.}
 
 \item{engine_pkg}{Character vector of package names the engine needs at fit
-time (besides the tidymodels glue). Checked by \code{\link[planscanR:train_selection_model]{planscanR::train_selection_model()}}.}
+time (besides the tidymodels glue). Checked by \code{\link[=train_selection_model]{train_selection_model()}}.}
 
 \item{recipe_fn}{Optional \verb{function(train, feature_names) -> recipe}
 overriding the default preprocessing. \code{NULL} uses the package default
@@ -29,7 +29,7 @@ An S3 object of class \code{planscanR_selection_learner}.
 }
 \description{
 Wraps a parsnip model specification into an S3 object the trainer
-understands. Use the built-in constructors (\code{\link[planscanR:selection_learners_builtin]{planscanR::selection_learner_logistic()}}
+understands. Use the built-in constructors (\code{\link[=selection_learner_logistic]{selection_learner_logistic()}}
 and friends) for the common cases, or this generic constructor to plug in any
 parsnip classification spec.
 }

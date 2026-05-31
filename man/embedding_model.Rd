@@ -11,7 +11,7 @@ embedding_model(name, languages, embed_fn)
 the sidecar JSON to record which model produced a score.}
 
 \item{languages}{Character vector of ISO-639-1 codes the model is
-documented to support. Used by \code{\link[planscanR:score_records]{planscanR::score_records()}} to warn when a record's
+documented to support. Used by \code{\link[=score_records]{score_records()}} to warn when a record's
 country language falls outside this set.}
 
 \item{embed_fn}{A function of one argument (\code{x}, a character vector) that
@@ -25,8 +25,8 @@ An S3 object of class
 \description{
 Wraps a user-supplied \code{embed_fn} plus a language inventory into an S3
 object that participates in the same interface as the built-in models
-(e.g. \code{\link[planscanR:embedding_model_minilm]{planscanR::embedding_model_minilm()}}). Pass it as \code{relevance_model} to
-\code{\link[planscanR:get_assessments]{planscanR::get_assessments()}} or \code{\link[planscanR:score_records]{planscanR::score_records()}}.
+(e.g. \code{\link[=embedding_model_minilm]{embedding_model_minilm()}}). Pass it as \code{relevance_model} to
+\code{\link[planscanR:get_assessments]{planscanR::get_assessments()}} or \code{\link[=score_records]{score_records()}}.
 }
 \examples{
 \dontrun{

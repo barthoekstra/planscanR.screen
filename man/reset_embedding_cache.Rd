@@ -15,5 +15,5 @@ Nothing, invisibly.
 \description{
 Removes the cached \code{SentenceTransformer} for a given model ID (or all
 cached models if \code{model_id} is \code{NULL}). The next call to
-\code{\link[planscanR:embed_text]{planscanR::embed_text()}} on that model will re-load it from disk / Hugging Face.
+\code{\link[=embed_text]{embed_text()}} on that model will re-load it from disk / Hugging Face.
 }

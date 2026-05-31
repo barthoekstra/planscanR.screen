@@ -22,16 +22,16 @@ selection_learning_curve(
 \arguments{
 \item{records}{A scored + classified tibble (from \code{\link[planscanR:get_assessments]{planscanR::get_assessments()}},
 \code{\link[planscanR:index_cache]{planscanR::index_cache()}}, or the review-app snapshot) carrying the
-\code{\link[planscanR:selection_features]{planscanR::selection_features()}} columns.}
+\code{\link[=selection_features]{selection_features()}} columns.}
 
 \item{reviews}{The review-decision tibble (the app's \code{reviews.csv}), with
 \code{document_id}, \code{country}, \code{decision}, \code{source}, \code{reviewed_at}.}
 
 \item{topics, labels}{The topic and classifier-label vectors naming the
-feature columns (required); see \code{\link[planscanR:selection_feature_names]{planscanR::selection_feature_names()}}.}
+feature columns (required); see \code{\link[=selection_feature_names]{selection_feature_names()}}.}
 
-\item{learner}{A \link[planscanR:selection_learner]{planscanR::selection_learner}. Defaults to
-\code{\link[planscanR:selection_learners_builtin]{planscanR::selection_learner_logistic()}}.}
+\item{learner}{A \link{selection_learner}. Defaults to
+\code{\link[=selection_learner_logistic]{selection_learner_logistic()}}.}
 
 \item{sizes}{Optional integer vector of training-label counts to evaluate.
 \code{NULL} builds a grid of ~10-12 increasing sizes from 30 up to the maximum
@@ -70,7 +70,7 @@ stratified train/test split (the test set is FIXED across all training sizes
 within that repeat, so the metric is comparable as the training pool grows),
 then fits the learner on increasing stratified subsamples of the training pool
 and scores the held-out test set. Repeating the whole thing \code{repeats} times and
-averaging (see \code{\link[planscanR:learning_curve_summary]{planscanR::learning_curve_summary()}}) smooths out the split noise and
+averaging (see \code{\link[=learning_curve_summary]{learning_curve_summary()}}) smooths out the split noise and
 shows where the curve flattens.
 }
 \examples{
@@ -82,5 +82,5 @@ learning_curve_summary(curve)
 }
 }
 \seealso{
-\code{\link[planscanR:learning_curve_summary]{planscanR::learning_curve_summary()}} to aggregate the curve.
+\code{\link[=learning_curve_summary]{learning_curve_summary()}} to aggregate the curve.
 }

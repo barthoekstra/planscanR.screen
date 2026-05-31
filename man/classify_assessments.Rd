@@ -18,7 +18,7 @@ classify_assessments(
 have at least \code{title} (and ideally \code{summary}, \code{native_type}).}
 
 \item{classifier}{A \code{planscanR_classifier}. Defaults to
-\code{\link[planscanR:classify_model_zeroshot]{planscanR::classify_model_zeroshot()}}.}
+\code{\link[=classify_model_zeroshot]{classify_model_zeroshot()}}.}
 
 \item{labels}{Named character vector of candidate labels (required). Names
 are stable slugs used as column suffixes (\verb{class_score_<slug>}); values are
@@ -33,7 +33,7 @@ which is the point. \code{TRUE} scores each label independently.}
 
 \item{batch_size}{Number of records handed to the classifier per call —
 controls progress granularity and R-Python round trips. This is distinct
-from the model's GPU \code{batch_size} (set on \code{\link[planscanR:classify_model_zeroshot]{planscanR::classify_model_zeroshot()}}),
+from the model's GPU \code{batch_size} (set on \code{\link[=classify_model_zeroshot]{classify_model_zeroshot()}}),
 which controls how the NLI pairs are batched through the device.}
 
 \item{write_sidecar}{If \code{TRUE}, persist the verdict into each record's
@@ -45,7 +45,7 @@ sidecar JSON. Default \code{FALSE} (in-memory only).}
 \description{
 Offline pass (no portal calls): for each record, classifies
 title + summary + category against \code{labels} and adds the verdict as new
-columns. Pairs with \code{\link[planscanR:index_cache]{planscanR::index_cache()}} and \code{\link[planscanR:score_assessments]{planscanR::score_assessments()}} — same
+columns. Pairs with \code{\link[planscanR:index_cache]{planscanR::index_cache()}} and \code{\link[=score_assessments]{score_assessments()}} — same
 harvest-broad-classify-later workflow.
 }
 \details{

@@ -32,7 +32,7 @@ ambiguous ground truth.
 }
 
 Records reviewed by a single reviewer trivially pass. This is the rule used
-for both the training labels (\code{\link[planscanR:train_selection_model]{planscanR::train_selection_model()}}) and the
+for both the training labels (\code{\link[=train_selection_model]{train_selection_model()}}) and the
 automated-vs-human comparison, so a disagreement never silently becomes a
 label.
 }

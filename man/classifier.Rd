@@ -22,6 +22,6 @@ An S3 object of class
 }
 \description{
 Wraps a user-supplied \code{classify_fn} into an S3 object that participates in
-the same interface as the built-in \code{\link[planscanR:classify_model_zeroshot]{planscanR::classify_model_zeroshot()}}. Useful for
+the same interface as the built-in \code{\link[=classify_model_zeroshot]{classify_model_zeroshot()}}. Useful for
 tests (a deterministic mock) or to plug in a different backend.
 }
