@@ -49,12 +49,12 @@ left→right:
   (Suggests) the tidymodels glue. Config-agnostic.
 - `planscanR.biogain` — Imports both; holds the BIOGAIN
   topics/labels/lexicon, ensemble select rule, review Shiny app, Yoda
-  sync, runbook. (Its `AGENTS.md` is created in Phase 1 — once present,
-  defer there for project specifics.)
+  sync, runbook. Defer to its
+  [../planscanR.biogain/AGENTS.md](https://barthoekstra.github.io/planscanR.biogain/AGENTS.md)
+  for project specifics.
 
 Parent-level orientation:
-[../CLAUDE.md](https://barthoekstra.github.io/CLAUDE.md) (and
-`../MIGRATION_PLAN.md` while the migration is in progress).
+[../CLAUDE.md](https://barthoekstra.github.io/CLAUDE.md).
 
 ## Architecture / key files
 
@@ -159,7 +159,8 @@ Parent-level orientation:
   Never reimplement cache-root resolution or the sidecar JSON schema
   (currently v2, asserted on read by planscanR’s reader). A schema
   change needs a version bump and matching reads in all three packages —
-  see §4 of the migration plan.
+  see the sidecar-schema note in the parent
+  [../CLAUDE.md](https://barthoekstra.github.io/CLAUDE.md).
 - **S3 generics are owned here.** `embedding_model` / `embed_text` /
   `model_name` / `supported_languages`, `classifier` / `classify_text` /
   `classifier_name`, and `selection_learner` are *defined* in this
@@ -200,8 +201,8 @@ Parent-level orientation:
 
 ## Pointers
 
-- Generics-ownership table and the sidecar-schema contract: §4 of the
-  parent `MIGRATION_PLAN.md`.
+- Generics-ownership table and the sidecar-schema contract: the parent
+  [../CLAUDE.md](https://barthoekstra.github.io/CLAUDE.md).
 - Cosine scoring entry point:
   [`score_records()`](https://barthoekstra.github.io/planscanR.screen/reference/score_records.md)
   / `score_assessments(write_sidecar = TRUE)`.

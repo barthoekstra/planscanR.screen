@@ -1,8 +1,9 @@
 # Built-in selection learner.
 
-Logistic regression on the base-R `glm` engine — the default the BIOGAIN
-selection model trains. Needs only the tidymodels glue (parsnip /
-recipes / rsample / workflows), no extra modelling backend.
+Logistic regression on the base-R `glm` engine — the default
+[`train_selection_model()`](https://barthoekstra.github.io/planscanR.screen/reference/train_selection_model.md)
+fits. Needs only the tidymodels glue (parsnip / recipes / rsample /
+workflows), no extra modelling backend.
 
 ## Usage
 

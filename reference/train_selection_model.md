@@ -27,14 +27,14 @@ train_selection_model(
   A scored + classified tibble (from
   [`planscanR::get_assessments()`](https://barthoekstra.github.io/planscanR/reference/get_assessments.html),
   [`planscanR::index_cache()`](https://barthoekstra.github.io/planscanR/reference/index_cache.html),
-  or the review-app snapshot) carrying the
+  or a review-app snapshot) carrying the
   [`selection_features()`](https://barthoekstra.github.io/planscanR.screen/reference/selection_features.md)
   columns. Only records that also appear in `reviews` with a keep/drop
   decision are used for training.
 
 - reviews:
 
-  The review-decision tibble (the app's `reviews.csv`), with
+  The review-decision tibble (e.g. a review tool's `reviews.csv`), with
   `document_id`, `country`, `decision`, `source`, `reviewed_at`.
 
 - topics, labels:

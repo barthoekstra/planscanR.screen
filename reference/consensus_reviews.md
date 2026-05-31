@@ -13,7 +13,7 @@ consensus_reviews(reviews, decisions = c("keep", "drop"))
 
 - reviews:
 
-  The review-decision tibble (e.g. the app's `reviews.csv`), with
+  The review-decision tibble (e.g. a review tool's `reviews.csv`), with
   `document_id`, `country`, `decision`, `reviewer`, `reviewed_at`.
 
 - decisions:

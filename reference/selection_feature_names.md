@@ -1,9 +1,9 @@
 # Names of the features the selection model is trained on.
 
 The default set is the three numeric relevance signals already persisted
-on every sidecar: one cosine score per BIOGAIN topic
-(`relevance_score_<slug>`), one zero-shot classifier score per candidate
-label (`class_score_<slug>`), and the keyword total (`kw_total`).
+on every sidecar: one cosine score per topic (`relevance_score_<slug>`),
+one zero-shot classifier score per candidate label
+(`class_score_<slug>`), and the keyword total (`kw_total`).
 
 ## Usage
 

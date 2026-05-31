@@ -20,6 +20,7 @@
   <button class="nav-link dropdown-toggle" type="button" id="dropdown-articles" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">Articles</button>
   <ul class="dropdown-menu" aria-labelledby="dropdown-articles"><li><a class="dropdown-item" href="articles/scoring.html">Scoring records by topic relevance</a></li>
   </ul></li>
+<li class="nav-item"><a class="nav-link" href="news/index.html">Changelog</a></li>
       </ul><ul class="navbar-nav"><li class="nav-item"><form class="form-inline" role="search">
  <input class="form-control" type="search" name="search-input" id="search-input" autocomplete="off" aria-label="Search site" placeholder="Search for" data-search-index="search.json"></form></li>
 <li class="nav-item"><a class="external-link nav-link" href="https://github.com/barthoekstra/planscanR.screen/" aria-label="GitHub"><span class="fa fab fa-github fa-lg"></span></a></li>
@@ -61,8 +62,8 @@
 <li>
 <strong><code>planscanR.screen</code></strong> — Imports <code>planscanR</code>; adds <code>reticulate</code> and (Suggests) the tidymodels glue. Config-agnostic.</li>
 <li>
-<code>planscanR.biogain</code> — Imports both; holds the BIOGAIN topics/labels/lexicon, ensemble select rule, review Shiny app, Yoda sync, runbook. (Its <code>AGENTS.md</code> is created in Phase 1 — once present, defer there for project specifics.)</li>
-</ul><p>Parent-level orientation: <a href="../CLAUDE.html">../CLAUDE.md</a> (and <code>../MIGRATION_PLAN.md</code> while the migration is in progress).</p>
+<code>planscanR.biogain</code> — Imports both; holds the BIOGAIN topics/labels/lexicon, ensemble select rule, review Shiny app, Yoda sync, runbook. Defer to its <a href="../planscanR.biogain/AGENTS.html">../planscanR.biogain/AGENTS.md</a> for project specifics.</li>
+</ul><p>Parent-level orientation: <a href="../CLAUDE.html">../CLAUDE.md</a>.</p>
 </div>
 <div class="section level2">
 <h2 id="architecture--key-files">Architecture / key files<a class="anchor" aria-label="anchor" href="#architecture--key-files"></a></h2>
@@ -94,7 +95,7 @@
 <div class="section level2">
 <h2 id="contracts-you-must-not-break">Contracts you must not break<a class="anchor" aria-label="anchor" href="#contracts-you-must-not-break"></a></h2>
 <ul><li>
-<strong>Sidecar I/O is owned by <code>planscanR</code>.</strong> Read/write via <code><a href="https://barthoekstra.github.io/planscanR/reference/read_record_sidecar.html" class="external-link">planscanR::read_record_sidecar()</a></code> / <code><a href="https://barthoekstra.github.io/planscanR/reference/write_record_sidecar.html" class="external-link">planscanR::write_record_sidecar()</a></code>; resolve the cache root only via <code><a href="https://barthoekstra.github.io/planscanR/reference/cache_dir_default.html" class="external-link">planscanR::cache_dir_default()</a></code>. Never reimplement cache-root resolution or the sidecar JSON schema (currently v2, asserted on read by planscanR’s reader). A schema change needs a version bump and matching reads in all three packages — see §4 of the migration plan.</li>
+<strong>Sidecar I/O is owned by <code>planscanR</code>.</strong> Read/write via <code><a href="https://barthoekstra.github.io/planscanR/reference/read_record_sidecar.html" class="external-link">planscanR::read_record_sidecar()</a></code> / <code><a href="https://barthoekstra.github.io/planscanR/reference/write_record_sidecar.html" class="external-link">planscanR::write_record_sidecar()</a></code>; resolve the cache root only via <code><a href="https://barthoekstra.github.io/planscanR/reference/cache_dir_default.html" class="external-link">planscanR::cache_dir_default()</a></code>. Never reimplement cache-root resolution or the sidecar JSON schema (currently v2, asserted on read by planscanR’s reader). A schema change needs a version bump and matching reads in all three packages — see the sidecar-schema note in the parent <a href="../CLAUDE.html">../CLAUDE.md</a>.</li>
 <li>
 <strong>S3 generics are owned here.</strong> <code>embedding_model</code> / <code>embed_text</code> / <code>model_name</code> / <code>supported_languages</code>, <code>classifier</code> / <code>classify_text</code> / <code>classifier_name</code>, and <code>selection_learner</code> are <em>defined</em> in this package. Add new methods (a new backend, a new learner) <strong>here</strong>, in the package that owns the generic — not in the package that introduces the subclass.</li>
 <li>
@@ -115,7 +116,7 @@
 </ul></div>
 <div class="section level2">
 <h2 id="pointers">Pointers<a class="anchor" aria-label="anchor" href="#pointers"></a></h2>
-<ul><li>Generics-ownership table and the sidecar-schema contract: §4 of the parent <code>MIGRATION_PLAN.md</code>.</li>
+<ul><li>Generics-ownership table and the sidecar-schema contract: the parent <a href="../CLAUDE.html">../CLAUDE.md</a>.</li>
 <li>Cosine scoring entry point: <code><a href="reference/score_records.html">score_records()</a></code> / <code>score_assessments(write_sidecar = TRUE)</code>.</li>
 <li>Selection model round-trip: <code><a href="reference/train_selection_model.html">train_selection_model()</a></code> → <code><a href="reference/save_selection_model.html">save_selection_model()</a></code> (conventionally <code>selection_model.rds</code> in the cache root) → <code><a href="reference/save_selection_model.html">load_selection_model()</a></code> → <code><a href="reference/predict_selection.html">predict_selection()</a></code>.</li>
 <li>BIOGAIN-specific wiring (ensemble rule, runbook, review app): the <code>planscanR.biogain</code> repo, not here.</li>
