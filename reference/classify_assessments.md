@@ -4,8 +4,9 @@ Offline pass (no portal calls): for each record, classifies title +
 summary + category against `labels` and adds the verdict as new columns.
 Pairs with
 [`planscanR::index_cache()`](https://barthoekstra.github.io/planscanR/reference/index_cache.html)
-and `planscanR::score_assessments()` — same harvest-broad-classify-later
-workflow.
+and
+[`score_assessments()`](https://barthoekstra.github.io/planscanR.screen/reference/score_assessments.md)
+— same harvest-broad-classify-later workflow.
 
 ## Usage
 
@@ -33,7 +34,7 @@ classify_assessments(
 - classifier:
 
   A `planscanR_classifier`. Defaults to
-  `planscanR::classify_model_zeroshot()`.
+  [`classify_model_zeroshot()`](https://barthoekstra.github.io/planscanR.screen/reference/classify_model_zeroshot.md).
 
 - labels:
 
@@ -55,8 +56,8 @@ classify_assessments(
   Number of records handed to the classifier per call — controls
   progress granularity and R-Python round trips. This is distinct from
   the model's GPU `batch_size` (set on
-  `planscanR::classify_model_zeroshot()`), which controls how the NLI
-  pairs are batched through the device.
+  [`classify_model_zeroshot()`](https://barthoekstra.github.io/planscanR.screen/reference/classify_model_zeroshot.md)),
+  which controls how the NLI pairs are batched through the device.
 
 - write_sidecar:
 

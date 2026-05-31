@@ -1,7 +1,8 @@
 # Re-score an existing planscanR result tibble against (additional) topics.
 
-Thin wrapper over `planscanR::score_records()` tuned for the case where
-you already have a tibble of records (from
+Thin wrapper over
+[`score_records()`](https://barthoekstra.github.io/planscanR.screen/reference/score_records.md)
+tuned for the case where you already have a tibble of records (from
 [`planscanR::get_assessments()`](https://barthoekstra.github.io/planscanR/reference/get_assessments.html)
 or
 [`planscanR::index_cache()`](https://barthoekstra.github.io/planscanR/reference/index_cache.html))
@@ -26,12 +27,12 @@ score_assessments(records, topic, model = NULL, write_sidecar = FALSE)
 - topic:
 
   Single string or named character vector. See
-  `planscanR::score_records()`.
+  [`score_records()`](https://barthoekstra.github.io/planscanR.screen/reference/score_records.md).
 
 - model:
 
   A `planscanR_embedding_model`. Defaults to
-  `planscanR::embedding_model_minilm()`.
+  [`embedding_model_minilm()`](https://barthoekstra.github.io/planscanR.screen/reference/embedding_model_minilm.md).
 
 - write_sidecar:
 

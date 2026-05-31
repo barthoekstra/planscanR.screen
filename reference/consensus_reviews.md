@@ -37,7 +37,8 @@ reviewers). Empty if no record has an agreed decision.
     dropped as ambiguous ground truth.
 
 Records reviewed by a single reviewer trivially pass. This is the rule
-used for both the training labels (`planscanR::train_selection_model()`)
+used for both the training labels
+([`train_selection_model()`](https://barthoekstra.github.io/planscanR.screen/reference/train_selection_model.md))
 and the automated-vs-human comparison, so a disagreement never silently
 becomes a label.
 

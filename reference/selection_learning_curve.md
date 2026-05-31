@@ -7,8 +7,8 @@ sizes within that repeat, so the metric is comparable as the training
 pool grows), then fits the learner on increasing stratified subsamples
 of the training pool and scores the held-out test set. Repeating the
 whole thing `repeats` times and averaging (see
-`planscanR::learning_curve_summary()`) smooths out the split noise and
-shows where the curve flattens.
+[`learning_curve_summary()`](https://barthoekstra.github.io/planscanR.screen/reference/learning_curve_summary.md))
+smooths out the split noise and shows where the curve flattens.
 
 ## Usage
 
@@ -37,7 +37,8 @@ selection_learning_curve(
   [`planscanR::get_assessments()`](https://barthoekstra.github.io/planscanR/reference/get_assessments.html),
   [`planscanR::index_cache()`](https://barthoekstra.github.io/planscanR/reference/index_cache.html),
   or the review-app snapshot) carrying the
-  `planscanR::selection_features()` columns.
+  [`selection_features()`](https://barthoekstra.github.io/planscanR.screen/reference/selection_features.md)
+  columns.
 
 - reviews:
 
@@ -47,12 +48,15 @@ selection_learning_curve(
 - topics, labels:
 
   The topic and classifier-label vectors naming the feature columns
-  (required); see `planscanR::selection_feature_names()`.
+  (required); see
+  [`selection_feature_names()`](https://barthoekstra.github.io/planscanR.screen/reference/selection_feature_names.md).
 
 - learner:
 
-  A planscanR::selection_learner. Defaults to
-  `planscanR::selection_learner_logistic()`.
+  A
+  [selection_learner](https://barthoekstra.github.io/planscanR.screen/reference/selection_learner.md).
+  Defaults to
+  [`selection_learner_logistic()`](https://barthoekstra.github.io/planscanR.screen/reference/selection_learners_builtin.md).
 
 - sizes:
 
@@ -103,7 +107,8 @@ repeat).
 
 ## See also
 
-`planscanR::learning_curve_summary()` to aggregate the curve.
+[`learning_curve_summary()`](https://barthoekstra.github.io/planscanR.screen/reference/learning_curve_summary.md)
+to aggregate the curve.
 
 ## Examples
 

@@ -28,8 +28,9 @@ train_selection_model(
   [`planscanR::get_assessments()`](https://barthoekstra.github.io/planscanR/reference/get_assessments.html),
   [`planscanR::index_cache()`](https://barthoekstra.github.io/planscanR/reference/index_cache.html),
   or the review-app snapshot) carrying the
-  `planscanR::selection_features()` columns. Only records that also
-  appear in `reviews` with a keep/drop decision are used for training.
+  [`selection_features()`](https://barthoekstra.github.io/planscanR.screen/reference/selection_features.md)
+  columns. Only records that also appear in `reviews` with a keep/drop
+  decision are used for training.
 
 - reviews:
 
@@ -39,14 +40,18 @@ train_selection_model(
 - topics, labels:
 
   The topic and classifier-label vectors naming the feature columns
-  (required); see `planscanR::selection_feature_names()`. Stored on the
-  returned model so `planscanR::predict_selection()` rebuilds the same
-  feature frame.
+  (required); see
+  [`selection_feature_names()`](https://barthoekstra.github.io/planscanR.screen/reference/selection_feature_names.md).
+  Stored on the returned model so
+  [`predict_selection()`](https://barthoekstra.github.io/planscanR.screen/reference/predict_selection.md)
+  rebuilds the same feature frame.
 
 - learner:
 
-  A planscanR::selection_learner. Defaults to
-  `planscanR::selection_learner_logistic()`.
+  A
+  [selection_learner](https://barthoekstra.github.io/planscanR.screen/reference/selection_learner.md).
+  Defaults to
+  [`selection_learner_logistic()`](https://barthoekstra.github.io/planscanR.screen/reference/selection_learners_builtin.md).
 
 - eval_source:
 
@@ -55,7 +60,8 @@ train_selection_model(
 
 - include:
 
-  Optional extra feature columns; see `planscanR::selection_features()`.
+  Optional extra feature columns; see
+  [`selection_features()`](https://barthoekstra.github.io/planscanR.screen/reference/selection_features.md).
 
 - v, repeats:
 

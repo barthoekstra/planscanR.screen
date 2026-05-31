@@ -44,14 +44,14 @@
     <div class="section level2">
     <h2 id="details">Details<a class="anchor" aria-label="anchor" href="#details"></a></h2>
 
-<ul><li><p><strong>Relevance scoring</strong> — <code>planscanR::score_assessments()</code> / <code>planscanR::score_records()</code> over a
-pluggable <code>planscanR::embedding_model()</code> (built-in MiniLM backend
-<code>planscanR::embedding_model_minilm()</code>).</p></li>
-<li><p><strong>Zero-shot classification</strong> — <code>planscanR::classify_assessments()</code> over a pluggable
-<code>planscanR::classifier()</code> (built-in <code>planscanR::classify_model_zeroshot()</code>).</p></li>
-<li><p><strong>Lexical keywords</strong> — <code>planscanR::score_keywords()</code> over a caller-supplied lexicon.</p></li>
-<li><p><strong>Learned selection</strong> — <code>planscanR::train_selection_model()</code> / <code>planscanR::predict_selection()</code>
-over the per-record scores, with a pluggable <code>planscanR::selection_learner()</code>.</p></li>
+<ul><li><p><strong>Relevance scoring</strong> — <code><a href="score_assessments.html">score_assessments()</a></code> / <code><a href="score_records.html">score_records()</a></code> over a
+pluggable <code><a href="embedding_model.html">embedding_model()</a></code> (built-in MiniLM backend
+<code><a href="embedding_model_minilm.html">embedding_model_minilm()</a></code>).</p></li>
+<li><p><strong>Zero-shot classification</strong> — <code><a href="classify_assessments.html">classify_assessments()</a></code> over a pluggable
+<code><a href="classifier.html">classifier()</a></code> (built-in <code><a href="classify_model_zeroshot.html">classify_model_zeroshot()</a></code>).</p></li>
+<li><p><strong>Lexical keywords</strong> — <code><a href="score_keywords.html">score_keywords()</a></code> over a caller-supplied lexicon.</p></li>
+<li><p><strong>Learned selection</strong> — <code><a href="train_selection_model.html">train_selection_model()</a></code> / <code><a href="predict_selection.html">predict_selection()</a></code>
+over the per-record scores, with a pluggable <code><a href="selection_learner.html">selection_learner()</a></code>.</p></li>
 </ul><p>Reads and writes the planscanR sidecar cache through <code>planscanR::</code> (the cache
 owner). The BIOGAIN-specific topics, labels, lexicon, and ensemble rule live
 in <span class="pkg">planscanR.biogain</span>.</p>

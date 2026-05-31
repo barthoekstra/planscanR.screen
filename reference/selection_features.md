@@ -1,7 +1,8 @@
 # Build the selection-model feature frame from records.
 
 Produces a tibble carrying the record keys (`document_id`, `country`)
-plus one column per feature in `planscanR::selection_feature_names()`.
+plus one column per feature in
+[`selection_feature_names()`](https://barthoekstra.github.io/planscanR.screen/reference/selection_feature_names.md).
 Missing or non-finite numeric features are filled with `0` (an unscored
 / unclassified record reads as "no signal"), so the frame is fully
 determined by the records and the feature spec — the key property that

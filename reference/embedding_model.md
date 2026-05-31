@@ -2,10 +2,12 @@
 
 Wraps a user-supplied `embed_fn` plus a language inventory into an S3
 object that participates in the same interface as the built-in models
-(e.g. `planscanR::embedding_model_minilm()`). Pass it as
-`relevance_model` to
+(e.g.
+[`embedding_model_minilm()`](https://barthoekstra.github.io/planscanR.screen/reference/embedding_model_minilm.md)).
+Pass it as `relevance_model` to
 [`planscanR::get_assessments()`](https://barthoekstra.github.io/planscanR/reference/get_assessments.html)
-or `planscanR::score_records()`.
+or
+[`score_records()`](https://barthoekstra.github.io/planscanR.screen/reference/score_records.md).
 
 ## Usage
 
@@ -23,8 +25,9 @@ embedding_model(name, languages, embed_fn)
 - languages:
 
   Character vector of ISO-639-1 codes the model is documented to
-  support. Used by `planscanR::score_records()` to warn when a record's
-  country language falls outside this set.
+  support. Used by
+  [`score_records()`](https://barthoekstra.github.io/planscanR.screen/reference/score_records.md)
+  to warn when a record's country language falls outside this set.
 
 - embed_fn:
 

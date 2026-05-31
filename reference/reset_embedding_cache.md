@@ -2,8 +2,8 @@
 
 Removes the cached `SentenceTransformer` for a given model ID (or all
 cached models if `model_id` is `NULL`). The next call to
-`planscanR::embed_text()` on that model will re-load it from disk /
-Hugging Face.
+[`embed_text()`](https://barthoekstra.github.io/planscanR.screen/reference/embed_text.md)
+on that model will re-load it from disk / Hugging Face.
 
 ## Usage
 

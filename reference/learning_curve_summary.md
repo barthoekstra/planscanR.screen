@@ -12,7 +12,8 @@ learning_curve_summary(curve)
 
 - curve:
 
-  The long tibble returned by `planscanR::selection_learning_curve()`.
+  The long tibble returned by
+  [`selection_learning_curve()`](https://barthoekstra.github.io/planscanR.screen/reference/selection_learning_curve.md).
 
 ## Value
 

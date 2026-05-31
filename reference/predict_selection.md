@@ -3,7 +3,7 @@
 Adds two columns: `select_prob` (the model's P(keep)) and
 `selected_model` (logical, `select_prob >= threshold`). Network-free —
 it reuses the per-record scores already on the sidecars via
-`planscanR::selection_features()`.
+[`selection_features()`](https://barthoekstra.github.io/planscanR.screen/reference/selection_features.md).
 
 ## Usage
 
@@ -19,7 +19,9 @@ predict_selection(model, records, threshold = NULL)
 
 - records:
 
-  A tibble carrying the `planscanR::selection_features()` columns.
+  A tibble carrying the
+  [`selection_features()`](https://barthoekstra.github.io/planscanR.screen/reference/selection_features.md)
+  columns.
 
 - threshold:
 

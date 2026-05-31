@@ -2,8 +2,9 @@
 
 Wraps a user-supplied `classify_fn` into an S3 object that participates
 in the same interface as the built-in
-`planscanR::classify_model_zeroshot()`. Useful for tests (a
-deterministic mock) or to plug in a different backend.
+[`classify_model_zeroshot()`](https://barthoekstra.github.io/planscanR.screen/reference/classify_model_zeroshot.md).
+Useful for tests (a deterministic mock) or to plug in a different
+backend.
 
 ## Usage
 
