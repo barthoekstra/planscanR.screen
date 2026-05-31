@@ -62,7 +62,7 @@ train_selection_model <- function(
   if (missing(topics) || missing(labels)) {
     cli::cli_abort(c(
       "{.arg topics} and {.arg labels} are required.",
-      i = "Pass the topic and classifier-label vectors, e.g. {.code planscanR.biogain::biogain_assessment_topics()} and {.code planscanR.biogain::biogain_classification_labels()}."
+      i = "Pass the topic and classifier-label vectors used to score and classify the records."
     ))
   }
   require_tidymodels(learner$engine_pkg)

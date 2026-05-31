@@ -40,9 +40,9 @@ make_fake_classifier <- function() {
 }
 
 # Local candidate-label fixture so the framework tests carry their own labels
-# (classify_assessments() now requires them; the BIOGAIN set lives in
-# planscanR.biogain). Mirrors the BIOGAIN cardinality and the slugs the mock
-# classifier keys on; `relevant` marks the positive (energy) classes.
+# (classify_assessments() now requires them). A representative cardinality and
+# the slugs the mock classifier keys on; `relevant` marks the positive (energy)
+# classes.
 fake_labels <- function() {
   labs <- c(
     wind = "wind", solar = "solar", power_grid = "grid",

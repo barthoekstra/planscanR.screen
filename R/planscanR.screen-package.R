@@ -12,8 +12,8 @@
 #'   over the per-record scores, with a pluggable [selection_learner()].
 #'
 #' Reads and writes the planscanR sidecar cache through `planscanR::` (the cache
-#' owner). The BIOGAIN-specific topics, labels, lexicon, and ensemble rule live
-#' in \pkg{planscanR.biogain}.
+#' owner). Topics, labels, and keyword lexicons are caller-supplied — the
+#' framework ships no project-specific defaults.
 #'
 #' @keywords internal
 #' @importFrom rlang .data

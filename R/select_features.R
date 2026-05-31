@@ -21,11 +21,10 @@
 #' zero-shot classifier score per candidate label (`class_score_<slug>`), and
 #' the keyword total (`kw_total`).
 #'
-#' @param topics Named topic vector naming the cosine columns (required). The
-#'   BIOGAIN set is `biogain_assessment_topics()` in `planscanR.biogain`.
+#' @param topics Named topic vector naming the cosine columns (required) — the
+#'   same vector you passed to [score_records()].
 #' @param labels Named classifier-label vector naming the classifier columns
-#'   (required). The BIOGAIN set is `biogain_classification_labels()` in
-#'   `planscanR.biogain`.
+#'   (required) — the same vector you passed to [classify_assessments()].
 #' @param include Optional extra feature columns to append (off by default).
 #'   Recognised: `"country"`, `"native_type"`. These are country-specific and
 #'   will not transfer to an unseen portal — opt in only when training and
@@ -45,7 +44,7 @@ selection_feature_names <- function(
   if (missing(topics) || missing(labels)) {
     cli::cli_abort(c(
       "{.arg topics} and {.arg labels} are required.",
-      i = "Pass the topic and classifier-label vectors, e.g. {.code planscanR.biogain::biogain_assessment_topics()} and {.code planscanR.biogain::biogain_classification_labels()}."
+      i = "Pass the topic and classifier-label vectors used to score and classify the records."
     ))
   }
   cosine <- paste0("relevance_score_", names(topics))
@@ -96,7 +95,7 @@ selection_features <- function(
   if (missing(topics) || missing(labels)) {
     cli::cli_abort(c(
       "{.arg topics} and {.arg labels} are required.",
-      i = "Pass the topic and classifier-label vectors, e.g. {.code planscanR.biogain::biogain_assessment_topics()} and {.code planscanR.biogain::biogain_classification_labels()}."
+      i = "Pass the topic and classifier-label vectors used to score and classify the records."
     ))
   }
   n <- nrow(records)

@@ -18,9 +18,7 @@
 #'
 #' @param records A tibble; uses `title`, `summary`, and (if present)
 #'   `native_type`.
-#' @param lexicon Named list of term vectors, one per topic (required). The
-#'   BIOGAIN lexicon is `biogain_keyword_lexicon()` in the `planscanR.biogain`
-#'   package.
+#' @param lexicon Named list of term vectors, one per topic (required).
 #' @param text_fn Optional `function(record) -> character` building the text to
 #'   scan. Default concatenates title + summary + native_type.
 #' @return `records` with `kw_<topic>` and `kw_total` columns added.
@@ -28,7 +26,8 @@
 #' @examples
 #' \dontrun{
 #' recs <- index_cache(country = "nl")
-#' scored <- score_keywords(recs, lexicon = biogain_keyword_lexicon())
+#' lexicon <- list(wind = c("wind", "turbine"), solar = c("solar", "pv"))
+#' scored <- score_keywords(recs, lexicon = lexicon)
 #' scored[scored$kw_total == 0, "title"] # likely non-energy
 #' }
 score_keywords <- function(records, lexicon, text_fn = NULL) {
@@ -38,7 +37,7 @@ score_keywords <- function(records, lexicon, text_fn = NULL) {
   if (missing(lexicon) || is.null(lexicon)) {
     cli::cli_abort(c(
       "{.arg lexicon} is required.",
-      i = "Pass a named list of term vectors, e.g. {.code planscanR.biogain::biogain_keyword_lexicon()}."
+      i = "Pass a named list of term vectors, e.g. {.code list(wind = c(\"wind\", \"turbine\"))}."
     ))
   }
   topics <- names(lexicon)

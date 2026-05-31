@@ -62,8 +62,7 @@ classification_text <- function(records) {
 #'   are stable slugs used as column suffixes (`class_score_<slug>`); values are
 #'   the natural-language hypotheses fed to the zero-shot model. A `relevant`
 #'   attribute marks which slugs count as relevant; if absent, every label is
-#'   treated as relevant. The BIOGAIN set is `biogain_classification_labels()`
-#'   in the `planscanR.biogain` package.
+#'   treated as relevant.
 #' @param multi_label If `FALSE` (default) labels are mutually exclusive
 #'   (softmax); the negative classes then compete with the positive ones,
 #'   which is the point. `TRUE` scores each label independently.
@@ -95,7 +94,7 @@ classify_assessments <- function(
   if (missing(labels) || is.null(labels)) {
     cli::cli_abort(c(
       "{.arg labels} is required.",
-      i = "Pass a named character vector of candidate labels, e.g. {.code planscanR.biogain::biogain_classification_labels()}."
+      i = "Pass a named character vector of candidate labels, e.g. {.code c(wind = \"wind energy project\", other = \"unrelated to energy\")}."
     ))
   }
   if (is.null(classifier)) {

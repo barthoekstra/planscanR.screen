@@ -1,8 +1,8 @@
 # Tests for the lexical keyword layer.
 
 # Local lexicon fixture so the framework tests carry their own terms
-# (score_keywords() now requires a lexicon; the BIOGAIN lexicon lives in
-# planscanR.biogain). Mirrors the BIOGAIN term lists the assertions key on.
+# (score_keywords() now requires a lexicon). The term lists the assertions key
+# on.
 kw_lexicon <- function() {
   list(
     wind = c("wind", "repowering"),

@@ -11,12 +11,11 @@ selection_features(records, topics, labels, include = character(0))
 \verb{relevance_score_*} / \verb{class_score_*} / \code{kw_total} columns (whatever is
 present; absent columns are treated as \code{0}).}
 
-\item{topics}{Named topic vector naming the cosine columns (required). The
-BIOGAIN set is \code{biogain_assessment_topics()} in \code{planscanR.biogain}.}
+\item{topics}{Named topic vector naming the cosine columns (required) — the
+same vector you passed to \code{\link[=score_records]{score_records()}}.}
 
 \item{labels}{Named classifier-label vector naming the classifier columns
-(required). The BIOGAIN set is \code{biogain_classification_labels()} in
-\code{planscanR.biogain}.}
+(required) — the same vector you passed to \code{\link[=classify_assessments]{classify_assessments()}}.}
 
 \item{include}{Optional extra feature columns to append (off by default).
 Recognised: \code{"country"}, \code{"native_type"}. These are country-specific and

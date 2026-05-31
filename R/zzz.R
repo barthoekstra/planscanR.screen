@@ -1,8 +1,7 @@
 .onLoad <- function(libname, pkgname) {
   # Python deps owned by this package, declared once at load. reticulate's
-  # py_require() is additive across the session, so this does not clobber a
-  # sibling package's earlier declaration (e.g. planscanR.biogain's ibridges /
-  # argostranslate). Per the project memory note, sentence-transformers must be
+  # py_require() is additive across the session, so this does not clobber any
+  # earlier declaration by another loaded package. sentence-transformers must be
   # declared at the start of every R session for relevance scoring to resolve.
   #   * sentence-transformers — the MiniLM embedding backend
   #     ([embedding_model_minilm()]).

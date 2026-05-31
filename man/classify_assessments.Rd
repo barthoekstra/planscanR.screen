@@ -24,8 +24,7 @@ have at least \code{title} (and ideally \code{summary}, \code{native_type}).}
 are stable slugs used as column suffixes (\verb{class_score_<slug>}); values are
 the natural-language hypotheses fed to the zero-shot model. A \code{relevant}
 attribute marks which slugs count as relevant; if absent, every label is
-treated as relevant. The BIOGAIN set is \code{biogain_classification_labels()}
-in the \code{planscanR.biogain} package.}
+treated as relevant.}
 
 \item{multi_label}{If \code{FALSE} (default) labels are mutually exclusive
 (softmax); the negative classes then compete with the positive ones,

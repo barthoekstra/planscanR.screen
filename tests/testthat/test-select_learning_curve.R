@@ -2,8 +2,8 @@
 # glue (Suggests). Reuses a minimal synthetic generator (cleanly separable so any
 # learner trains fast and stably).
 
-# Local topic/label fixtures (the framework is config-agnostic; the BIOGAIN
-# sets live in planscanR.biogain). Cardinality mirrors the BIOGAIN sets.
+# Local topic/label fixtures (the framework is config-agnostic) at a
+# representative cardinality.
 lc_topics <- c(
   wind = "wind", solar = "solar", power_grid = "grid",
   other_renewable = "other_renewable", energy_strategy = "strategy",

@@ -10,9 +10,7 @@ score_keywords(records, lexicon, text_fn = NULL)
 \item{records}{A tibble; uses \code{title}, \code{summary}, and (if present)
 \code{native_type}.}
 
-\item{lexicon}{Named list of term vectors, one per topic (required). The
-BIOGAIN lexicon is \code{biogain_keyword_lexicon()} in the \code{planscanR.biogain}
-package.}
+\item{lexicon}{Named list of term vectors, one per topic (required).}
 
 \item{text_fn}{Optional \verb{function(record) -> character} building the text to
 scan. Default concatenates title + summary + native_type.}
@@ -30,7 +28,8 @@ so a stem like \code{"wind"} also matches compounds such as \code{"windpark"}.
 \examples{
 \dontrun{
 recs <- index_cache(country = "nl")
-scored <- score_keywords(recs, lexicon = biogain_keyword_lexicon())
+lexicon <- list(wind = c("wind", "turbine"), solar = c("solar", "pv"))
+scored <- score_keywords(recs, lexicon = lexicon)
 scored[scored$kw_total == 0, "title"] # likely non-energy
 }
 }

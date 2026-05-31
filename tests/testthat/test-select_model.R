@@ -3,9 +3,9 @@
 # (Suggests); featurization is pure base R and always runs.
 
 # Local topic/label fixtures so these tests exercise the framework without any
-# project-specific config (the framework is config-agnostic; the BIOGAIN sets
-# live in planscanR.biogain). Cardinality mirrors the BIOGAIN sets (6 topics,
-# 13 labels) and includes a "wind" slug, which synth_records keys on.
+# project-specific config (the framework is config-agnostic). A representative
+# cardinality (6 topics, 13 labels) including a "wind" slug, which synth_records
+# keys on.
 test_topics <- c(
   wind = "wind", solar = "solar", power_grid = "grid",
   other_renewable = "other_renewable", energy_strategy = "strategy",

@@ -21,8 +21,8 @@ over the per-record scores, with a pluggable \code{\link[=selection_learner]{sel
 }
 
 Reads and writes the planscanR sidecar cache through \verb{planscanR::} (the cache
-owner). The BIOGAIN-specific topics, labels, lexicon, and ensemble rule live
-in \pkg{planscanR.biogain}.
+owner). Topics, labels, and keyword lexicons are caller-supplied — the
+framework ships no project-specific defaults.
 }
 \seealso{
 Useful links:
