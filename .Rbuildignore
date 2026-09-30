@@ -8,3 +8,6 @@
 ^docs$
 ^pkgdown$
 ^AGENTS\.md$
+^\.git$
+^\.styler\.R$
+^scripts$
