@@ -203,7 +203,38 @@ progress <- curation_country_label_counts(
 The queue first returns records reviewed by another reviewer in the explicit
 project/corpus scope (`attr(queue, "mode") == "validate"`) and then falls back
 to an unseen stratified sample (`"fresh"`). Country is part of every queue and
-sample identity. Seeded calls restore the caller's RNG state, including when
-`.Random.seed` did not exist before the call. Review rows may use canonical
+sample identity. Calls with an explicit seed restore the caller's RNG state,
+including when `.Random.seed` did not exist before the call; an omitted seed
+advances the caller's normal RNG stream. Review rows may use canonical
 `reviewer_id` or the legacy `reviewer` column; explicit project/corpus columns
 are filtered when present.
+
+## Model and evaluation adapters
+
+Model callers pass one explicit `planscanR_curation_config`; its named
+`topics` and `labels` vectors determine the feature columns. The adapters keep
+the existing model class and serializer:
+
+```r
+model <- curation_train_model(
+  snapshot, reviews, config,
+  learner_key = "logistic", eval_source = "random", seed = 42
+)
+predictions <- curation_predict_model(model, snapshot, config)
+metrics <- curation_model_metrics(model, config, by_country = TRUE)
+curve <- curation_learning_curve(snapshot, reviews, config)
+```
+
+Training and learning curves delegate to the existing selection APIs. The
+default random source is filtered before unanimous `consensus_reviews()`;
+evaluation therefore excludes browse labels from the held-out/random metrics.
+`curation_selection_vs_human()` provides the same source filter for heuristic
+selection output, and `curation_inter_reviewer_summary()` reports agreement
+over keep/drop/unsure decisions. `curation_load_model()` accepts legacy RDS
+selection-model artifacts and validates their topic/label vectors when a
+configuration is supplied.
+
+Model publication has no concrete backend in this package. Callers inject the
+C3 artifact store and use `curation_publish_model()`, which writes through
+`curation_artifact_write_model()` and publishes only after a successful write;
+callback errors and explicit failed mutation results propagate to the caller.
