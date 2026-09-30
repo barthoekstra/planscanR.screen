@@ -27,7 +27,8 @@ legacy alias.}
 
 \item{n_per_country}{Positive fresh-sample size per country.}
 
-\item{seed}{Optional integer seed; RNG state is restored.}
+\item{seed}{Optional integer seed. \code{NA} behaves like \code{NULL}; with an
+explicit seed, the caller's RNG state is restored.}
 
 \item{scope}{Optional curation scope used to filter explicit project/corpus
 columns in \code{reviews}.}

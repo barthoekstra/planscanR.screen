@@ -20,7 +20,8 @@ uses the order first observed in \code{records}.}
 
 \item{n_per_country}{Positive number of rows per country.}
 
-\item{seed}{Optional integer seed. \code{NA} behaves like \code{NULL}.}
+\item{seed}{Optional integer seed. \code{NA} behaves like \code{NULL}; with \code{NULL},
+sampling advances the caller's RNG stream.}
 
 \item{n}{Legacy alias for \code{n_per_country}.}
 }
@@ -30,6 +31,7 @@ A tibble with \code{document_id} and \code{country} columns.
 \description{
 The sample is drawn from every supplied country before it is interleaved.
 \code{country} remains part of every identity, so native document IDs reused by
-two countries stay distinct. The caller's RNG state is restored on success
-and error, including when \code{.Random.seed} did not exist before the call.
+two countries stay distinct. When an explicit \code{seed} is supplied, the
+caller's RNG state is restored on success and error, including when
+\code{.Random.seed} did not exist before the call.
 }
