@@ -169,3 +169,41 @@ translation runtime, edits Python settings, or selects a model implicitly.
 Worker failures return `status = "error"` and preserve source text. Shared
 cache writes require `write_policy = "serialized"`, a cache writer, and a
 per-record `write_gate_fn(key, write_fn)`; otherwise writes fail closed.
+
+## Enrichment, sampling, and queues
+
+The generic records service reads a corpus through the injected provider and
+derives the scalar fields consumed by the review UI:
+
+```r
+snapshot <- curation_records_snapshot(provider, config, countries = countries)
+```
+
+`curation_records_snapshot()` is pure. It never reads or writes an RDS file;
+C3 supplies snapshot persistence through the artifact-store contract or a test
+double. `curation_enrich_records()` recomputes `cosine_max` from the topic
+columns named by `config$topics` and recomputes all keyword columns from
+`config$lexicon`, so a new configuration cannot reuse a previous keyword
+total. Attachment and download list columns are reduced to scalar counts and
+then removed by default.
+
+Sampling and progress are likewise pure helpers:
+
+```r
+sample <- curation_draw_random_sample(snapshot, countries, n_per_country, seed)
+queue <- curation_build_review_queue(
+  snapshot, reviews, reviewer_id, countries, n_per_country,
+  seed = seed, scope = config$identity
+)
+progress <- curation_country_label_counts(
+  snapshot, reviews, countries, reviewer_id, scope = config$identity
+)
+```
+
+The queue first returns records reviewed by another reviewer in the explicit
+project/corpus scope (`attr(queue, "mode") == "validate"`) and then falls back
+to an unseen stratified sample (`"fresh"`). Country is part of every queue and
+sample identity. Seeded calls restore the caller's RNG state, including when
+`.Random.seed` did not exist before the call. Review rows may use canonical
+`reviewer_id` or the legacy `reviewer` column; explicit project/corpus columns
+are filtered when present.
