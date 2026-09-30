@@ -121,6 +121,27 @@ import rule: a repeated import may be an idempotent no-op only when its mapped
 source namespace/row ID and payload still match; it must never overwrite a
 later live edit.
 
+The local SQLite implementation is opened with an explicit file path:
+
+```r
+repo <- curation_review_repository_sqlite("/data/biogain/reviews.sqlite")
+```
+
+It enables WAL and foreign keys, applies numbered migrations in one short
+transaction, and configures a finite busy timeout. The database keeps the
+`(project_id, corpus_id, country, document_id, reviewer_id)` key; `config_id`
+is retained as provenance. `curation_review_clear()` writes a tombstone and
+increments its revision, so an old client cannot recreate a cleared row. Bulk
+updates and imports validate every revision before writing and roll back as one
+transaction. Imported events are matched by `(project_id, corpus_id,
+import_source, import_row_id)` and their payload fingerprint. A matching event
+is a no-op even after a later edit or clear; a changed payload is a conflict.
+CSV export is an in-memory data-frame result (or can be written through the
+repository's `export_csv()` helper), so SQLite remains the sole authoritative
+review store. Rows also retain a backend `modified_at` audit timestamp; clearing
+a row preserves its authored `reviewed_at`, note, source, and import provenance
+on the tombstone.
+
 ## Snapshot, sample, and model artifacts
 
 ```r
