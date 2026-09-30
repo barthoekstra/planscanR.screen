@@ -166,9 +166,13 @@ result <- curation_translate(provider, record, key, source_language,
 `NULL` provider support returns original title/summary with
 `status = "disabled"`. A provider callback is injected and never imports a
 translation runtime, edits Python settings, or selects a model implicitly.
-Worker failures return `status = "error"` and preserve source text. Shared
-cache writes require `write_policy = "serialized"`, a cache writer, and a
-per-record `write_gate_fn(key, write_fn)`; otherwise writes fail closed.
+Worker failures, including a `NULL` or classed failure result, return
+`status = "error"` and preserve source text. Cache callbacks receive a key with
+`country`, `document_id`, and `target_language`, so different target languages
+cannot reuse one another's translations. Shared cache writes require
+`write_policy = "serialized"`, a cache writer, and a per-record
+`write_gate_fn(key, write_fn)`; the gate key excludes `target_language` so
+different target writes for one record serialize. Otherwise writes fail closed.
 
 ## Enrichment, sampling, and queues
 

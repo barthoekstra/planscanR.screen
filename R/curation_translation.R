@@ -48,10 +48,14 @@ curation_translation_record <- function(record) {
 #' @param source_language_fn Optional function accepting `record` and returning
 #'   a source-language code.
 #' @param cache_read_fn Optional function accepting `key` and `service_id` and
-#'   returning a previously translated result, or `NULL` on a miss.
-#' @param cache_write_fn Optional function accepting `key` and `value`.
-#' @param write_gate_fn Function accepting `key` and `write_fn`; it must invoke
-#'   `write_fn` while holding the deployment's per-record serialized gate.
+#'   returning a previously translated result, or `NULL` on a miss. The key
+#'   contains `country`, `document_id`, and `target_language`.
+#' @param cache_write_fn Optional function accepting the same target-qualified
+#'   `key` and a `value`.
+#' @param write_gate_fn Function accepting the record key and `write_fn`; it
+#'   must invoke `write_fn` while holding the deployment's per-record
+#'   serialized gate. The gate key excludes `target_language`, so two target
+#'   writes for one record cannot overlap.
 #' @param write_policy Either `"disabled"` or `"serialized"`.
 #' @return A `planscanR_curation_translation_provider` object.
 #' @export
@@ -131,6 +135,19 @@ curation_translation_value <- function(value) {
     )
   }
   value
+}
+
+curation_translation_failure <- function(original, failure) {
+  original$status <- "error"
+  original$error <- if (inherits(failure, "condition")) {
+    conditionMessage(failure)
+  } else {
+    as.character(failure)
+  }
+  if (length(original$error) != 1L || is.na(original$error) || !nzchar(original$error)) {
+    original$error <- "Translation worker failed without a message."
+  }
+  original
 }
 
 #' Translate one record through an optional injected provider.
@@ -215,11 +232,23 @@ curation_translate <- function(
     original$error <- "No source language was supplied or resolved."
     return(original)
   }
+  cache_key <- c(key, list(target_language = target_language))
   if (!is.null(provider$cache_read_fn)) {
-    cached <- provider$cache_read_fn(key = key, service_id = provider$service_id)
+    cached <- tryCatch(
+      provider$cache_read_fn(key = cache_key, service_id = provider$service_id),
+      error = function(e) e
+    )
+    if (inherits(cached, "condition")) {
+      return(curation_translation_failure(original, cached))
+    }
     if (!is.null(cached)) {
-      cached <- curation_translation_value(cached)
-      return(modifyList(original, c(status = "cached", cached)))
+      cached <- tryCatch(curation_translation_value(cached), error = function(e) e)
+      if (inherits(cached, "condition")) {
+        return(curation_translation_failure(original, cached))
+      }
+      cached_result <- modifyList(original, cached)
+      cached_result$status <- "cached"
+      return(cached_result)
     }
   }
   translated <- tryCatch(
@@ -230,12 +259,16 @@ curation_translate <- function(
     ),
     error = function(e) e
   )
-  if (inherits(translated, "error")) {
-    original$status <- "error"
-    original$error <- conditionMessage(translated)
-    return(original)
+  if (inherits(translated, "condition")) {
+    return(curation_translation_failure(original, translated))
   }
-  translated <- curation_translation_value(translated)
+  if (is.null(translated)) {
+    return(curation_translation_failure(original, "Translation worker returned NULL."))
+  }
+  translated <- tryCatch(curation_translation_value(translated), error = function(e) e)
+  if (inherits(translated, "condition")) {
+    return(curation_translation_failure(original, translated))
+  }
   result <- modifyList(original, translated)
   result$status <- "translated"
   if (isTRUE(write)) {
@@ -245,10 +278,16 @@ curation_translate <- function(
         class = "planscanR_error_curation_translation"
       )
     }
-    provider$write_gate_fn(
-      key = key,
-      write_fn = function() provider$cache_write_fn(key = key, value = result)
+    write_result <- tryCatch(
+      provider$write_gate_fn(
+        key = key,
+        write_fn = function() provider$cache_write_fn(key = cache_key, value = result)
+      ),
+      error = function(e) e
     )
+    if (inherits(write_result, "condition")) {
+      return(curation_translation_failure(original, write_result))
+    }
   }
   result
 }

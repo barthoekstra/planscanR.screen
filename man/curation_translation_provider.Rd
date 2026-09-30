@@ -25,12 +25,16 @@ curation_translation_provider(
 a source-language code.}
 
 \item{cache_read_fn}{Optional function accepting \code{key} and \code{service_id} and
-returning a previously translated result, or \code{NULL} on a miss.}
+returning a previously translated result, or \code{NULL} on a miss. The key
+contains \code{country}, \code{document_id}, and \code{target_language}.}
 
-\item{cache_write_fn}{Optional function accepting \code{key} and \code{value}.}
+\item{cache_write_fn}{Optional function accepting the same target-qualified
+\code{key} and a \code{value}.}
 
-\item{write_gate_fn}{Function accepting \code{key} and \code{write_fn}; it must invoke
-\code{write_fn} while holding the deployment's per-record serialized gate.}
+\item{write_gate_fn}{Function accepting the record key and \code{write_fn}; it
+must invoke \code{write_fn} while holding the deployment's per-record
+serialized gate. The gate key excludes \code{target_language}, so two target
+writes for one record cannot overlap.}
 
 \item{write_policy}{Either \code{"disabled"} or \code{"serialized"}.}
 }
