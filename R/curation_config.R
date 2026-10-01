@@ -347,7 +347,7 @@ curation_apply_selection <- function(config, records, controls = NULL) {
   } else {
     controls <- list()
   }
-  resolved <- modifyList(config$selection_controls, controls)
+  resolved <- utils::modifyList(config$selection_controls, controls)
   out <- config$select_fn(records = records, controls = resolved)
   if (!is.data.frame(out) || nrow(out) != nrow(records) || !"selected" %in% names(out)) {
     curation_abort(

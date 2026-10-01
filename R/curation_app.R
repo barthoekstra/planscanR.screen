@@ -263,7 +263,7 @@ curation_app_record_detail <- function(row, config) {
     style = "padding:12px 16px;background:#fafafa;",
     htmltools::div(
       style = "color:#777;font-size:12px;margin-bottom:8px;",
-      sprintf("ID: %s · %s", document_id, toupper(country))
+      sprintf("ID: %s \u00b7 %s", document_id, toupper(country))
     ),
     htmltools::div(
       style = "display:flex;gap:20px;flex-wrap:wrap;",
@@ -287,7 +287,7 @@ curation_app_record_detail <- function(row, config) {
       )
     ),
     if (has(url)) {
-      htmltools::tags$a(href = url, target = "_blank", "Open source page ↗")
+      htmltools::tags$a(href = url, target = "_blank", "Open source page \u2197")
     }
   )
 }
@@ -445,7 +445,7 @@ curation_app_single_record_ui <- function(row, config) {
     style = "font-size:15px;line-height:1.5;",
     htmltools::div(
       style = "color:#777;font-size:12px;margin-bottom:8px;",
-      sprintf("ID: %s · %s", document_id, toupper(country))
+      sprintf("ID: %s \u00b7 %s", document_id, toupper(country))
     ),
     meta_ui,
     htmltools::div(
@@ -469,7 +469,7 @@ curation_app_single_record_ui <- function(row, config) {
         }
       )
     ),
-    if (has(url)) htmltools::tags$a(href = url, target = "_blank", "Open source page ↗")
+    if (has(url)) htmltools::tags$a(href = url, target = "_blank", "Open source page \u2197")
   )
 }
 
@@ -630,7 +630,7 @@ curation_app_ui <- function(config) {
     bslib$nav_panel(
       "Random review",
       bslib$card(
-        bslib$card_header("Random sample — unbiased review"),
+        bslib$card_header("Random sample \u2014 unbiased review"),
         htmltools::div(
           class = "d-flex align-items-end flex-wrap gap-3",
           shiny$numericInput("rnd_n", "Records / country", 50, min = 1, step = 10),
@@ -655,8 +655,8 @@ curation_app_ui <- function(config) {
         shiny$conditionalPanel(
           "input.rnd_view == 'single'",
           htmltools::div(
-            shiny$actionButton("sr_prev", "← Previous", class = "btn-outline-secondary btn-sm"),
-            shiny$actionButton("sr_next", "Next →", class = "btn-outline-secondary btn-sm"),
+            shiny$actionButton("sr_prev", "\u2190 Previous", class = "btn-outline-secondary btn-sm"),
+            shiny$actionButton("sr_next", "Next \u2192", class = "btn-outline-secondary btn-sm"),
             shiny$checkboxInput("sr_skip", "Skip already-classified", TRUE),
             shiny$textOutput("sr_pos", inline = TRUE)
           ),
@@ -1063,7 +1063,7 @@ curation_app_server <- function(input, output, session, context) {
     if (is.null(fitted)) {
       return(shiny::helpText("No model published yet."))
     }
-    shiny::helpText(sprintf("Model: %s · %d labels", fitted$learner_name %||% "selection", fitted$n_train %||% NA_integer_))
+    shiny::helpText(sprintf("Model: %s \u00b7 %d labels", fitted$learner_name %||% "selection", fitted$n_train %||% NA_integer_))
   })
   output$learning_curve_plot <- plotly::renderPlotly({
     curation_app_learning_plot(learning_curve())
@@ -1131,12 +1131,12 @@ curation_app_server <- function(input, output, session, context) {
   output$vb_selected <- shiny::renderText({
     data <- filtered()
     n <- sum(data$selected %in% TRUE)
-    if (nrow(data) == 0L) "—" else sprintf("%s (%.1f%%)", format(n, big.mark = ","), 100 * n / nrow(data))
+    if (nrow(data) == 0L) "\u2014" else sprintf("%s (%.1f%%)", format(n, big.mark = ","), 100 * n / nrow(data))
   })
   output$vb_selected_model <- shiny::renderText({
     data <- filtered()
     if (nrow(data) == 0L || !any(!is.na(data$select_prob))) {
-      return("—")
+      return("\u2014")
     }
     n <- sum(data$selected_model %in% TRUE)
     sprintf("%s (%.1f%%)", format(n, big.mark = ","), 100 * n / nrow(data))
@@ -1144,7 +1144,7 @@ curation_app_server <- function(input, output, session, context) {
   output$vb_reviewed <- shiny::renderText({
     data <- filtered()
     if (nrow(data) == 0L) {
-      return("—")
+      return("\u2014")
     }
     n <- sum(curation_app_key_string(data$country, data$document_id) %in% current_reviewed_keys())
     sprintf("%s (%.1f%%)", format(n, big.mark = ","), 100 * n / nrow(data))
@@ -1324,7 +1324,7 @@ curation_app_server <- function(input, output, session, context) {
 
   output$agreement_ui <- shiny::renderUI({
     agreement <- tryCatch(curation_inter_reviewer_summary(reviews(), config), error = function(e) NULL)
-    agreement_ui <- if (is.null(agreement)) NULL else shiny::helpText(sprintf("Cross-reviewer agreement: %.0f%% — %d of %d records.", 100 * agreement$agreement_rate, agreement$n_agree, agreement$n_multi))
+    agreement_ui <- if (is.null(agreement)) NULL else shiny::helpText(sprintf("Cross-reviewer agreement: %.0f%% \u2014 %d of %d records.", 100 * agreement$agreement_rate, agreement$n_agree, agreement$n_multi))
     eval_source <- if (identical(input$eval_on, "random")) "random" else NULL
     heuristic <- tryCatch(curation_selection_vs_human(filtered(), reviews(), config, eval_source = eval_source), error = function(e) NULL)
     fitted <- model()
@@ -1332,15 +1332,15 @@ curation_app_server <- function(input, output, session, context) {
     if (is.null(heuristic)) {
       return(shiny::tagList(agreement_ui, shiny::helpText("No agreed labels for this view yet.")))
     }
-    fmt <- function(value) if (is.null(value) || is.na(value)) "—" else sprintf("%.2f", value)
+    fmt <- function(value) if (is.null(value) || is.na(value)) "\u2014" else sprintf("%.2f", value)
     shiny::tagList(
       agreement_ui,
       htmltools::tags$table(
         class = "curation-comparison",
-        htmltools::tags$thead(htmltools::tags$tr(htmltools::tags$th("Method"), htmltools::tags$th("Reviewed"), htmltools::tags$th("Precision · Recall · F1"), htmltools::tags$th("TP / FP / FN / TN"))),
+        htmltools::tags$thead(htmltools::tags$tr(htmltools::tags$th("Method"), htmltools::tags$th("Reviewed"), htmltools::tags$th("Precision \u00b7 Recall \u00b7 F1"), htmltools::tags$th("TP / FP / FN / TN"))),
         htmltools::tags$tbody(
-          htmltools::tags$tr(htmltools::tags$td("Heuristic"), htmltools::tags$td(heuristic$n_reviewed), htmltools::tags$td(sprintf("%s · %s · %s", fmt(heuristic$precision), fmt(heuristic$recall), fmt(heuristic$f1))), htmltools::tags$td(sprintf("%d / %d / %d / %d", heuristic$tp, heuristic$fp, heuristic$fn, heuristic$tn))),
-          htmltools::tags$tr(htmltools::tags$td("Model"), htmltools::tags$td(if (is.null(model_metrics)) "—" else model_metrics$n_reviewed), htmltools::tags$td(if (is.null(model_metrics)) "—" else sprintf("%s · %s · %s", fmt(model_metrics$precision), fmt(model_metrics$recall), fmt(model_metrics$f1))), htmltools::tags$td(if (is.null(model_metrics)) "—" else sprintf("%d / %d / %d / %d", model_metrics$tp, model_metrics$fp, model_metrics$fn, model_metrics$tn)))
+          htmltools::tags$tr(htmltools::tags$td("Heuristic"), htmltools::tags$td(heuristic$n_reviewed), htmltools::tags$td(sprintf("%s \u00b7 %s \u00b7 %s", fmt(heuristic$precision), fmt(heuristic$recall), fmt(heuristic$f1))), htmltools::tags$td(sprintf("%d / %d / %d / %d", heuristic$tp, heuristic$fp, heuristic$fn, heuristic$tn))),
+          htmltools::tags$tr(htmltools::tags$td("Model"), htmltools::tags$td(if (is.null(model_metrics)) "\u2014" else model_metrics$n_reviewed), htmltools::tags$td(if (is.null(model_metrics)) "\u2014" else sprintf("%s \u00b7 %s \u00b7 %s", fmt(model_metrics$precision), fmt(model_metrics$recall), fmt(model_metrics$f1))), htmltools::tags$td(if (is.null(model_metrics)) "\u2014" else sprintf("%d / %d / %d / %d", model_metrics$tp, model_metrics$fp, model_metrics$fn, model_metrics$tn)))
         )
       )
     )
@@ -1379,12 +1379,12 @@ curation_app_server <- function(input, output, session, context) {
   output$rnd_info <- shiny::renderText({
     queue <- sample()
     if (nrow(queue) == 0L) {
-      return("No queue yet — click Build queue.")
+      return("No queue yet \u2014 click Build queue.")
     }
     mine <- curation_app_active_reviews(reviews())
     mine <- mine[mine$reviewer_id == reviewer_id, , drop = FALSE]
     done <- sum(curation_app_key_string(queue$country, queue$document_id) %in% curation_app_key_string(mine$country, mine$document_id))
-    sprintf("%d in queue · %d done by you · %d remaining", nrow(queue), done, nrow(queue) - done)
+    sprintf("%d in queue \u00b7 %d done by you \u00b7 %d remaining", nrow(queue), done, nrow(queue) - done)
   })
 
   shiny::observeEvent(input$rnd_draw, {
@@ -1506,7 +1506,7 @@ curation_app_server <- function(input, output, session, context) {
     if (is.null(row)) {
       return("no sample")
     }
-    sprintf("Record %d of %d · %s%s", sample_index(), nrow(random_df()), toupper(row$country[[1L]]), if (!is.na(sr_decision(row))) paste0(" · ", toupper(sr_decision(row))) else "")
+    sprintf("Record %d of %d \u00b7 %s%s", sample_index(), nrow(random_df()), toupper(row$country[[1L]]), if (!is.na(sr_decision(row))) paste0(" \u00b7 ", toupper(sr_decision(row))) else "")
   })
   output$sr_record <- shiny::renderUI({
     curation_app_single_record_ui(sr_current(), config)

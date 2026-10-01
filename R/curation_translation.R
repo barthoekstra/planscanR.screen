@@ -246,7 +246,7 @@ curation_translate <- function(
       if (inherits(cached, "condition")) {
         return(curation_translation_failure(original, cached))
       }
-      cached_result <- modifyList(original, cached)
+      cached_result <- utils::modifyList(original, cached)
       cached_result$status <- "cached"
       return(cached_result)
     }
@@ -269,7 +269,7 @@ curation_translate <- function(
   if (inherits(translated, "condition")) {
     return(curation_translation_failure(original, translated))
   }
-  result <- modifyList(original, translated)
+  result <- utils::modifyList(original, translated)
   result$status <- "translated"
   if (isTRUE(write)) {
     if (provider$write_policy != "serialized") {

@@ -36,5 +36,10 @@ Useful links:
 \author{
 \strong{Maintainer}: Bart Hoekstra \email{mail@barthoekstra.nl}
 
+Authors:
+\itemize{
+  \item Bart Hoekstra \email{mail@barthoekstra.nl}
+}
+
 }
 \keyword{internal}

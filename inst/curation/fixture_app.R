@@ -33,7 +33,9 @@ stages <- list(
   list(key = "reviewed", label = "Human reviewed", fn = function(records, context) {
     keys <- paste(records$country, records$document_id, sep = "::")
     reviewed <- context$reviews
-    if (is.null(reviewed) || nrow(reviewed) == 0L) return(rep(FALSE, nrow(records)))
+    if (is.null(reviewed) || nrow(reviewed) == 0L) {
+      return(rep(FALSE, nrow(records)))
+    }
     keys %in% paste(reviewed$country, reviewed$document_id, sep = "::")
   })
 )
