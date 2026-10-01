@@ -27,13 +27,18 @@ Imports:
     tibble (>= 3.2.0)
 Suggests:
     DBI (>= 1.2.0),
+    bslib,
     covr,
+    htmltools,
     knitr,
     parsnip,
     recipes,
     rmarkdown,
     rsample,
     RSQLite (>= 2.3.0),
+    plotly,
+    reactable,
+    shiny,
     testthat (>= 3.2.0),
     withr,
     workflows
@@ -41,5 +46,5 @@ Config/testthat/edition: 3
 Config/Needs/website: pkgdown
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
-RoxygenNote: 7.3.3
 VignetteBuilder: knitr
+RoxygenNote: 7.3.3
