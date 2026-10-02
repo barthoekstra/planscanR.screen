@@ -131,6 +131,11 @@ curation_enrich_records <- function(records, config, drop_list_columns = TRUE) {
   } else {
     curation_existing_count(records, "n_downloaded", rep(0L, nrow(records)))
   }
+  # Recreate these derived columns in canonical order. A cache projection may
+  # carry the download count after discarding its list status column; removing
+  # stale instances first keeps its enriched frame byte-for-byte equivalent to
+  # enrichment from the unprojected sidecar row.
+  records[c("n_attachments", "has_attachments", "n_downloaded", "has_downloaded")] <- NULL
   records$n_attachments <- attachment_count
   records$has_attachments <- attachment_count > 0L
   records$n_downloaded <- download_count
@@ -189,22 +194,54 @@ curation_records_provider <- function(read_fn, refresh_fn = NULL) {
 
 #' Build a planscanR cache-backed record provider.
 #'
+#' When the default [planscanR::index_cache()] is used, the provider passes the
+#' bounded row-transform seam through to the leaf package. Its read callback
+#' also retains a versioned fingerprint of every successfully decoded complete
+#' row for [curation_records_snapshot()] provenance metadata.
+#'
 #' @param cache_dir Explicit planscanR cache root.
 #' @param index_fn Injectable equivalent of [planscanR::index_cache()] for
 #'   offline fixtures. It must accept `cache_dir` and `country`.
+#' @param batch_size Number of cache rows combined per leaf index batch. The
+#'   default is 512 and is passed to the leaf row-transform seam when the
+#'   default [planscanR::index_cache()] is used.
 #' @return A `planscanR_curation_records_provider` object.
 #' @export
-curation_records_provider_cache <- function(cache_dir, index_fn = planscanR::index_cache) {
+curation_records_provider_cache <- function(
+  cache_dir,
+  index_fn = planscanR::index_cache,
+  batch_size = 512L
+) {
   cache_dir <- curation_scalar_character(
     cache_dir,
     "cache_dir",
     class = "planscanR_error_curation_records"
   )
+  if (!is.numeric(batch_size) || length(batch_size) != 1L ||
+      is.na(batch_size) || !is.finite(batch_size) ||
+      batch_size < 1 || batch_size != trunc(batch_size) ||
+      batch_size > .Machine$integer.max) {
+    curation_abort(
+      "{.arg batch_size} must be one positive integer.",
+      class = "planscanR_error_curation_records"
+    )
+  }
+  batch_size <- as.integer(batch_size)
   if (!curation_function_accepts(index_fn, c("cache_dir", "country"))) {
     curation_abort(
       "{.arg index_fn} must accept {.arg cache_dir} and {.arg country}.",
       class = "planscanR_error_curation_records"
     )
+  }
+  leaf_index <- identical(index_fn, planscanR::index_cache)
+  if (leaf_index) {
+    leaf_formals <- names(formals(index_fn))
+    if (!all(c("row_transform", "batch_size") %in% leaf_formals) && !"..." %in% leaf_formals) {
+      curation_abort(
+        "The installed planscanR index_cache() does not provide the bounded row-transform seam.",
+        class = "planscanR_error_curation_records"
+      )
+    }
   }
   read_fn <- function(corpus_id, countries = NULL) {
     curation_scalar_character(
@@ -212,8 +249,101 @@ curation_records_provider_cache <- function(cache_dir, index_fn = planscanR::ind
       "corpus_id",
       class = "planscanR_error_curation_records"
     )
+    manifest <- new.env(parent = emptyenv())
+    # Keep one binding per decoded row so a large cache does not repeatedly
+    # copy and grow a single manifest list while the leaf is reading batches.
+    manifest$rows <- new.env(parent = emptyenv())
+    manifest$count <- 0L
+    row_transform <- if (leaf_index) {
+      function(record) {
+        country <- as.character(record$country[[1L]])
+        document_id <- as.character(record$document_id[[1L]])
+        manifest$count <- manifest$count + 1L
+        assign(as.character(manifest$count), list(
+          country = country,
+          document_id = document_id,
+          digest = curation_artifact_content_fingerprint(record)
+        ), envir = manifest$rows)
+        if ("download_status" %in% names(record)) {
+          record$n_downloaded <- curation_count_list_values(
+            record$download_status,
+            "downloads"
+          )
+        }
+        drop <- intersect(
+          names(record)[vapply(record, is.list, logical(1))],
+          c("download_status", "discovery_log")
+        )
+        drop <- union(drop, grep("^(attachment_urls_|local_path_)", names(record), value = TRUE))
+        if (length(drop) > 0L) {
+          record[drop] <- NULL
+        }
+        record
+      }
+    } else {
+      NULL
+    }
+    index <- function(country) {
+      if (!leaf_index) {
+        return(index_fn(cache_dir = cache_dir, country = country))
+      }
+      index_fn(
+        cache_dir = cache_dir,
+        country = country,
+        row_transform = row_transform,
+        batch_size = batch_size
+      )
+    }
+    attach_manifest <- function(records) {
+      records <- force(records)
+      if (!leaf_index) {
+        return(records)
+      }
+      entries <- if (manifest$count == 0L) {
+        list()
+      } else {
+        unname(mget(
+          as.character(seq_len(manifest$count)),
+          envir = manifest$rows,
+          inherits = FALSE
+        ))
+      }
+      manifest_rows <- if (length(entries) == 0L) {
+        data.frame(
+          country = character(0),
+          document_id = character(0),
+          digest = character(0),
+          stringsAsFactors = FALSE
+        )
+      } else {
+        data.frame(
+          country = vapply(entries, `[[`, character(1), "country"),
+          document_id = vapply(entries, `[[`, character(1), "document_id"),
+          digest = vapply(entries, `[[`, character(1), "digest"),
+          stringsAsFactors = FALSE
+        )
+      }
+      if (nrow(manifest_rows) > 0L) {
+        manifest_rows <- manifest_rows[order(
+          manifest_rows$country,
+          manifest_rows$document_id,
+          manifest_rows$digest,
+          method = "radix"
+        ), , drop = FALSE]
+        rownames(manifest_rows) <- NULL
+      }
+      fingerprint <- paste0(
+        "decoded-row-manifest-v1:",
+        curation_artifact_hash(list(
+          schema = "planscanR.decoded-row-manifest.v1",
+          rows = manifest_rows
+        ))
+      )
+      attr(records, "curation_source_fingerprint") <- fingerprint
+      records
+    }
     if (is.null(countries)) {
-      return(index_fn(cache_dir = cache_dir, country = NULL))
+      return(attach_manifest(index(NULL)))
     }
     if (!is.character(countries) || anyNA(countries) || any(!nzchar(countries))) {
       curation_abort(
@@ -221,19 +351,22 @@ curation_records_provider_cache <- function(cache_dir, index_fn = planscanR::ind
         class = "planscanR_error_curation_records"
       )
     }
-    parts <- lapply(countries, function(country) {
-      index_fn(cache_dir = cache_dir, country = country)
-    })
+    parts <- lapply(countries, index)
     parts <- Filter(function(x) is.data.frame(x) && nrow(x) > 0L, parts)
     if (length(parts) == 0L) {
-      return(tibble::tibble(
+      return(attach_manifest(tibble::tibble(
         country = character(0),
         document_id = character(0)
-      ))
+      )))
     }
-    dplyr::bind_rows(parts)
+    attach_manifest(dplyr::bind_rows(parts))
   }
-  curation_records_provider(read_fn = read_fn, refresh_fn = read_fn)
+  provider <- curation_records_provider(read_fn = read_fn, refresh_fn = read_fn)
+  if (leaf_index) {
+    attr(provider, "curation_source_manifest_schema") <-
+      "decoded-row-manifest-v1"
+  }
+  provider
 }
 
 curation_check_records_provider <- function(provider) {
@@ -293,6 +426,12 @@ curation_records_refresh <- function(provider, corpus_id, countries = NULL) {
 #' This is a pure service boundary: it performs no RDS or cache writes. C3 can
 #' persist the returned value through [curation_artifact_store()] or a test
 #' double, while a changed configuration always rebuilds the derived columns.
+#' With the default cache provider, `attr(snapshot, "curation_snapshot_metadata")$corpus_fingerprint`
+#' is tagged `decoded-row-manifest-v1:<hash>`. The versioned manifest hashes
+#' every successfully decoded complete planscanR row before projection, records
+#' each row's `country`, `document_id`, and complete-row digest, sorts those
+#' entries canonically, and hashes the serialized manifest. The `v1` tag names
+#' this algorithm so later manifest changes can be distinguished explicitly.
 #'
 #' @param provider A `planscanR_curation_records_provider`.
 #' @param config A `planscanR_curation_config` whose corpus identity is used.
@@ -314,7 +453,21 @@ curation_records_snapshot <- function(provider, config, countries = NULL, refres
   } else {
     curation_records_read(provider, config$corpus_id, countries = countries)
   }
-  raw_fingerprint <- curation_artifact_content_fingerprint(records)
+  manifest_schema <- attr(provider, "curation_source_manifest_schema", exact = TRUE)
+  if (identical(manifest_schema, "decoded-row-manifest-v1")) {
+    raw_fingerprint <- attr(records, "curation_source_fingerprint", exact = TRUE)
+    if (!is.character(raw_fingerprint) || length(raw_fingerprint) != 1L ||
+        is.na(raw_fingerprint) ||
+        !grepl("^decoded-row-manifest-v1:[[:xdigit:]]{32}$", raw_fingerprint)) {
+      curation_abort(
+        "The cache provider did not return a valid decoded-row manifest fingerprint.",
+        class = "planscanR_error_curation_records"
+      )
+    }
+    attr(records, "curation_source_fingerprint") <- NULL
+  } else {
+    raw_fingerprint <- curation_artifact_content_fingerprint(records)
+  }
   enriched <- curation_enrich_records(records, config)
   attr(enriched, "curation_snapshot_metadata") <- list(
     corpus_fingerprint = raw_fingerprint,

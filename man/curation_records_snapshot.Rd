@@ -25,4 +25,10 @@ An enriched corpus data frame.
 This is a pure service boundary: it performs no RDS or cache writes. C3 can
 persist the returned value through \code{\link[=curation_artifact_store]{curation_artifact_store()}} or a test
 double, while a changed configuration always rebuilds the derived columns.
+With the default cache provider, \code{attr(snapshot, "curation_snapshot_metadata")$corpus_fingerprint}
+is tagged \verb{decoded-row-manifest-v1:<hash>}. The versioned manifest hashes
+every successfully decoded complete planscanR row before projection, records
+each row's \code{country}, \code{document_id}, and complete-row digest, sorts those
+entries canonically, and hashes the serialized manifest. The \code{v1} tag names
+this algorithm so later manifest changes can be distinguished explicitly.
 }

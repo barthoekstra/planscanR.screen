@@ -48,6 +48,25 @@ with non-empty `country` and `document_id` columns. The convenience adapter
 receives an explicit cache root and calls the exported `planscanR` index API;
 it never resolves a process-wide cache setting or reimplements sidecar I/O.
 
+When the default leaf index is used, the adapter supplies its bounded
+`row_transform` seam with a default batch size of 512. The transform hashes
+each complete decoded sidecar row before deriving `n_downloaded` and dropping
+the documented list fields (`download_status`, `discovery_log`, and
+per-section `attachment_urls_*`/`local_path_*` columns). Base
+`attachment_urls`/`local_path`, scalar fields, text, scores, and other extras
+remain available to enrichment. The leaf combines only bounded transformed
+row batches, and a malformed transform result aborts the read rather than
+returning a partial frame.
+
+The adapter records a sorted `(country, document_id, row_digest)` manifest
+over every decoded row, including fields removed from the UI projection. Its
+fingerprint is tagged `decoded-row-manifest-v1:` and is consumed by
+`curation_records_snapshot()` as the corpus fingerprint, so a change to a
+discarded download or discovery field invalidates a cached snapshot. Sorting
+makes country-filter and read-order changes stable; additions and deletions
+change the manifest. A caller-supplied `index_fn` keeps the existing full-frame
+path and fingerprint behavior, including ordinary data-frame attributes.
+
 ## Actors, keys, rows, and results
 
 Authentication is deployment-owned:
