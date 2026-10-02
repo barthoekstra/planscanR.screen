@@ -352,6 +352,97 @@ curation_artifact_sqlite_atomic_save <- function(value, path) {
   invisible(path)
 }
 
+curation_artifact_sqlite_model_file_fingerprint_prefix <- "rds-file-sha256-v1:"
+
+curation_artifact_sqlite_require_file_digest <- function() {
+  if (!requireNamespace("openssl", quietly = TRUE)) {
+    curation_artifact_sqlite_abort(
+      "The SQLite curation model store needs the openssl package to verify model files.",
+      class = "planscanR_error_missing_dep"
+    )
+  }
+  invisible(TRUE)
+}
+
+curation_artifact_sqlite_read_file_bytes <- function(path) {
+  connection <- file(path, open = "rb")
+  on.exit(close(connection), add = TRUE)
+  chunks <- list()
+  repeat {
+    chunk <- readBin(connection, what = "raw", n = 1024L * 1024L)
+    if (length(chunk) == 0L) {
+      break
+    }
+    chunks[[length(chunks) + 1L]] <- chunk
+  }
+  if (length(chunks) == 0L) {
+    return(raw(0))
+  }
+  do.call(c, chunks)
+}
+
+curation_artifact_sqlite_sha256_hex <- function(bytes) {
+  curation_artifact_sqlite_require_file_digest()
+  as.character(openssl::sha256(bytes))
+}
+
+curation_artifact_sqlite_model_file_fingerprint <- function(path) {
+  bytes <- curation_artifact_sqlite_read_file_bytes(path)
+  paste0(
+    curation_artifact_sqlite_model_file_fingerprint_prefix,
+    curation_artifact_sqlite_sha256_hex(bytes)
+  )
+}
+
+curation_artifact_sqlite_parse_model_fingerprint <- function(value) {
+  if (!is.character(value) || length(value) != 1L || is.na(value) || !nzchar(value)) {
+    curation_artifact_sqlite_abort(
+      "The model artifact fingerprint metadata is malformed."
+    )
+  }
+  prefix <- curation_artifact_sqlite_model_file_fingerprint_prefix
+  if (startsWith(value, prefix)) {
+    digest <- substring(value, nchar(prefix) + 1L)
+    if (!grepl("^[0-9a-f]{64}$", digest)) {
+      curation_artifact_sqlite_abort(
+        "The model artifact file fingerprint metadata is malformed."
+      )
+    }
+    return(list(kind = "file", digest = digest))
+  }
+  if (grepl(":", value, fixed = TRUE)) {
+    curation_artifact_sqlite_abort(
+      "The model artifact fingerprint metadata uses an unknown tag."
+    )
+  }
+  list(kind = "legacy", digest = value)
+}
+
+curation_artifact_sqlite_read_model_bytes <- function(bytes, path) {
+  connection <- rawConnection(bytes, open = "rb")
+  reader <- if (length(bytes) >= 2L && identical(as.integer(bytes[1:2]), c(31L, 139L))) {
+    gzcon(connection)
+  } else {
+    connection
+  }
+  on.exit(try(close(reader), silent = TRUE), add = TRUE)
+  read_result <- tryCatch(
+    {
+      # curation_artifact_sqlite_atomic_save() uses the default gzip RDS
+      # compression. Detect it so the digest and deserialization consume the
+      # same captured byte stream, avoiding a path replacement between reads.
+      readRDS(reader)
+    },
+    error = function(error) {
+      curation_artifact_sqlite_abort(
+        paste0("The model artifact could not be read: ", path),
+        parent = error
+      )
+    }
+  )
+  read_result
+}
+
 curation_artifact_sqlite_migrate <- function(conn, busy_timeout) {
   curation_sqlite_with_transaction(conn, function() {
     DBI::dbExecute(
@@ -841,25 +932,42 @@ curation_artifact_sqlite_validate_model_file <- function(row) {
   if (nrow(row) == 0L || !file.exists(row$path[[1L]])) {
     curation_artifact_sqlite_abort("The requested model artifact is missing.")
   }
-  model <- tryCatch(
-    readRDS(row$path[[1L]]),
-    error = function(error) {
+  fingerprint <- curation_artifact_sqlite_parse_model_fingerprint(row$model_fingerprint[[1L]])
+  if (identical(fingerprint$kind, "file")) {
+    bytes <- curation_artifact_sqlite_read_file_bytes(row$path[[1L]])
+    actual <- paste0(
+      curation_artifact_sqlite_model_file_fingerprint_prefix,
+      curation_artifact_sqlite_sha256_hex(bytes)
+    )
+    if (!identical(actual, row$model_fingerprint[[1L]])) {
       curation_artifact_sqlite_abort(
-        paste0("The model artifact could not be read: ", row$path[[1L]]),
-        parent = error
+        "The model artifact file fingerprint does not match its immutable metadata."
       )
     }
-  )
+    model <- curation_artifact_sqlite_read_model_bytes(bytes, row$path[[1L]])
+  } else {
+    model <- tryCatch(
+      readRDS(row$path[[1L]]),
+      error = function(error) {
+        curation_artifact_sqlite_abort(
+          paste0("The model artifact could not be read: ", row$path[[1L]]),
+          parent = error
+        )
+      }
+    )
+  }
   if (!inherits(model, "planscanR_selection_model")) {
     curation_artifact_sqlite_abort(
       paste0("The model artifact is not a planscanR_selection_model: ", row$path[[1L]])
     )
   }
-  actual_fingerprint <- curation_artifact_content_fingerprint(model)
-  if (!identical(as.character(actual_fingerprint), as.character(row$model_fingerprint[[1L]]))) {
-    curation_artifact_sqlite_abort(
-      "The model artifact fingerprint does not match its immutable metadata."
-    )
+  if (identical(fingerprint$kind, "legacy")) {
+    actual_fingerprint <- curation_artifact_content_fingerprint(model)
+    if (!identical(as.character(actual_fingerprint), as.character(row$model_fingerprint[[1L]]))) {
+      curation_artifact_sqlite_abort(
+        "The model artifact fingerprint does not match its immutable metadata."
+      )
+    }
   }
   model
 }
@@ -945,6 +1053,7 @@ curation_artifact_sqlite_model_write <- function(
   )
   path <- file.path(state$paths$models, paste0(model_id, ".rds"))
   curation_artifact_sqlite_atomic_save(model, path)
+  model_fingerprint <- curation_artifact_sqlite_model_file_fingerprint(path)
   curation_sqlite_with_transaction(
     curation_artifact_sqlite_state_connection(state),
     function() {
@@ -963,7 +1072,7 @@ curation_artifact_sqlite_model_write <- function(
           model_id,
           1L,
           path,
-          curation_artifact_content_fingerprint(model),
+          model_fingerprint,
           curation_artifact_sqlite_serialize(provenance),
           actor$id,
           provenance$created_at

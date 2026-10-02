@@ -10,7 +10,9 @@ curation_app(
   review_repository,
   artifact_store,
   actor_resolver,
-  request = NULL
+  request = NULL,
+  actor_probe = NULL,
+  logout_path = NULL
 )
 }
 \arguments{
@@ -27,12 +29,20 @@ snapshot, and model seams.}
 
 \item{request}{Optional deployment request value or function accepting
 \code{session}; it is passed to the actor resolver.}
+
+\item{actor_probe}{Optional non-touching actor resolver used by the periodic
+socket-expiry check. Mutation paths always use \code{actor_resolver}.}
+
+\item{logout_path}{Optional local POST path rendered as a visible Log out
+control, for example \verb{/app/logout}. It is absent by default.}
 }
 \value{
 A \code{shiny.appobj}.
 }
 \description{
 All corpus, review, artifact, identity, and translation boundaries are
-supplied by the caller.  The app resolves its trusted actor once per
-session; display names are informational and cannot select a reviewer.
+supplied by the caller.  The app resolves its trusted actor at session start,
+rechecks it before mutations, and uses an optional non-touching probe to
+close an expired socket; display names are informational and cannot select
+a reviewer.
 }

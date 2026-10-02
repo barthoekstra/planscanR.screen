@@ -43,6 +43,12 @@ test_that("the HTTP gate protects the app prefix and validates opaque sessions",
     )$status,
     401L
   )
+  default_login <- planscanR.screen:::curation_auth_http_response(
+    auth, request(path = "/app/login"), config
+  )
+  expect_match(default_login$body, "<h1>Curation login</h1>", fixed = TRUE)
+  expect_match(default_login$body, "name=\"referrer\" content=\"same-origin\"", fixed = TRUE)
+  expect_identical(default_login$headers$`Referrer-Policy`, "same-origin")
 
   now <- floor(as.numeric(Sys.time()))
   otp <- planscanR.screen:::curation_auth_totp_code(secret, now)
@@ -116,6 +122,36 @@ test_that("the HTTP gate protects the app prefix and validates opaque sessions",
     "^biogain_session=[0-9a-f]{64}; Path=/app; Max-Age=43200; Secure; HttpOnly; SameSite=Strict$"
   )
   expect_identical(login$headers$Location, "/app/")
+
+  # The deployment proxy may expose /app/login and /app/logout publicly while
+  # forwarding them to internal /auth/* handler routes.  Browser redirects
+  # and the form action must stay on the public prefix.
+  alias_config <- planscanR.screen:::curation_auth_http_config(
+    expected_origin = origin,
+    app_path = "/app/",
+    login_path = "/auth/login",
+    check_path = "/auth/check",
+    logout_path = "/auth/logout",
+    health_path = "/healthz",
+    login_title = "BIOGAIN login"
+  )
+  alias_login <- planscanR.screen:::curation_auth_http_response(
+    auth, request(path = "/auth/login"), alias_config
+  )
+  expect_identical(alias_login$status, 200L)
+  expect_match(alias_login$body, "action=\"/app/login\"", fixed = TRUE)
+  expect_match(alias_login$body, "<h1>BIOGAIN login</h1>", fixed = TRUE)
+  alias_logout <- planscanR.screen:::curation_auth_http_response(
+    auth,
+    request(
+      method = "POST",
+      path = "/auth/logout",
+      headers = c(HTTP_COOKIE = cookie, HTTP_ORIGIN = origin)
+    ),
+    alias_config
+  )
+  expect_identical(alias_logout$status, 303L)
+  expect_identical(alias_logout$headers$Location, "/app/login")
 
   oversized <- planscanR.screen:::curation_auth_http_on_headers(
     request(
@@ -193,6 +229,7 @@ test_that("the auth subrequest requires trusted forwarded request metadata", {
     app_path = "/app/",
     cookie_name = "biogain_session"
   )
+  origin <- config$expected_origin
   cookie <- paste0("biogain_session=", login$session_token)
   check <- function(headers) planscanR.screen:::curation_auth_http_response(
     auth,
@@ -219,6 +256,7 @@ test_that("the auth subrequest requires trusted forwarded request metadata", {
       HTTP_X_ORIGINAL_METHOD = "GET",
       HTTP_X_ORIGINAL_UPGRADE = "websocket",
       HTTP_X_FORWARDED_PROTO = "https",
+      HTTP_X_ORIGINAL_ORIGIN = origin,
       HTTP_ORIGIN = "https://evil.example"
     ))$status,
     403L

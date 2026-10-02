@@ -12,6 +12,8 @@ run_curation(
   actor_resolver,
   request = NULL,
   launch.browser = interactive(),
+  actor_probe = NULL,
+  logout_path = NULL,
   ...
 )
 }
@@ -31,6 +33,12 @@ snapshot, and model seams.}
 \code{session}; it is passed to the actor resolver.}
 
 \item{launch.browser}{Passed to \code{\link[shiny:runApp]{shiny::runApp()}}.}
+
+\item{actor_probe}{Optional non-touching actor resolver used by the periodic
+socket-expiry check. Mutation paths always use \code{actor_resolver}.}
+
+\item{logout_path}{Optional local POST path rendered as a visible Log out
+control, for example \verb{/app/logout}. It is absent by default.}
 
 \item{...}{Further arguments passed to \code{\link[shiny:runApp]{shiny::runApp()}}, such as \code{host} or
 \code{port}.}

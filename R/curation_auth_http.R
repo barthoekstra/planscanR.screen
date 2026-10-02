@@ -51,14 +51,17 @@ curation_auth_http_config <- function(
   app_path = "/app/",
   cookie_name = "biogain_session",
   login_path = NULL,
+  public_login_path = NULL,
   check_path = NULL,
   logout_path = NULL,
+  public_logout_path = NULL,
   health_path = NULL,
   public_origin = NULL,
   trusted_proxy_header = NULL,
   trusted_proxy_value = "1",
   max_body_bytes = 8192L,
-  cookie_max_age = 43200L
+  cookie_max_age = 43200L,
+  login_title = "Curation login"
 ) {
   has_expected <- is.character(expected_origin) && length(expected_origin) == 1L &&
     !is.na(expected_origin) && nzchar(expected_origin)
@@ -83,15 +86,28 @@ curation_auth_http_config <- function(
     if (is.null(value)) fallback else curation_auth_http_path(value, name)
   }
   login_path <- route(login_path, paste0(app_path, "login"), "login_path")
+  public_login_path <- route(
+    public_login_path, paste0(app_path, "login"), "public_login_path"
+  )
   check_path <- route(check_path, paste0(app_path, "_auth/validate"), "check_path")
   logout_path <- route(logout_path, paste0(app_path, "logout"), "logout_path")
+  public_logout_path <- route(
+    public_logout_path, paste0(app_path, "logout"), "public_logout_path"
+  )
   health_path <- route(health_path, paste0(app_path, "health"), "health_path")
+  if (!startsWith(public_login_path, app_path) || !startsWith(public_logout_path, app_path)) {
+    curation_auth_abort("The public login and logout paths must be under app_path.")
+  }
   max_body_bytes <- curation_auth_integer(
     max_body_bytes, "max_body_bytes", lower = 256L, upper = 1048576L
   )
   cookie_max_age <- curation_auth_integer(
     cookie_max_age, "cookie_max_age", lower = 60L, upper = 604800L
   )
+  login_title <- curation_auth_scalar(login_title, "login_title")
+  if (grepl("[<>\"&\\r\\n]", login_title, perl = TRUE)) {
+    curation_auth_abort("The login_title contains unsafe HTML characters.")
+  }
   if (!is.null(trusted_proxy_header)) {
     trusted_proxy_header <- curation_auth_scalar(trusted_proxy_header, "trusted_proxy_header")
     if (!grepl("^[A-Za-z][A-Za-z0-9-]{0,63}$", trusted_proxy_header, perl = TRUE)) {
@@ -109,13 +125,16 @@ curation_auth_http_config <- function(
     cookie_path = sub("/$", "", app_path),
     cookie_name = cookie_name,
     login_path = login_path,
+    public_login_path = public_login_path,
     check_path = check_path,
     logout_path = logout_path,
+    public_logout_path = public_logout_path,
     health_path = health_path,
     trusted_proxy_header = trusted_proxy_header,
     trusted_proxy_value = trusted_proxy_value,
     max_body_bytes = max_body_bytes,
-    cookie_max_age = cookie_max_age
+    cookie_max_age = cookie_max_age,
+    login_title = login_title
   )
 }
 
@@ -229,14 +248,15 @@ curation_auth_http_response_object <- function(
   )
 }
 
-curation_auth_http_login_page <- function(action) {
+curation_auth_http_login_page <- function(action, title = "Curation login") {
   # `action` has already passed the canonical route validator; it is the only
   # deployment value interpolated into this static page.
   action <- gsub("&", "&amp;", gsub("\"", "&quot;", action, fixed = TRUE), fixed = TRUE)
+  title <- gsub("&", "&amp;", gsub("\"", "&quot;", title, fixed = TRUE), fixed = TRUE)
   paste0(
     "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">",
-    "<meta name=\"referrer\" content=\"no-referrer\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">",
-    "<title>BIOGAIN login</title></head><body><main><h1>BIOGAIN login</h1>",
+    "<meta name=\"referrer\" content=\"same-origin\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">",
+    "<title>", title, "</title></head><body><main><h1>", title, "</h1>",
     "<form method=\"post\" action=\"", action, "\">",
     "<label>Username <input name=\"username\" autocomplete=\"username\" required></label>",
     "<label>Authenticator code <input name=\"otp\" inputmode=\"numeric\" autocomplete=\"one-time-code\" pattern=\"[0-9]{6,8}\" required></label>",
@@ -263,10 +283,9 @@ curation_auth_http_upgrade <- function(request) {
 }
 
 curation_auth_http_origin_request <- function(request, original = FALSE) {
-  if (isTRUE(original)) {
-    value <- curation_auth_http_header(request, c("HTTP_X_ORIGINAL_ORIGIN", "X-Original-Origin"))
-    if (!is.null(value)) return(value)
-  }
+  # nginx overwrites the canonical Origin header in the internal subrequest.
+  # Do not accept X-Original-Origin: clients can send that header themselves
+  # unless a deployment explicitly adds a separate trusted metadata contract.
   curation_auth_http_header(request, c("HTTP_ORIGIN", "Origin"))
 }
 
@@ -359,8 +378,8 @@ curation_auth_http_response <- function(auth, request, config) {
     if (identical(method, "GET") || identical(method, "HEAD")) {
       return(curation_auth_http_response_object(
         200L,
-        curation_auth_http_login_page(config$login_path),
-        headers = list(`Content-Type` = "text/html; charset=utf-8", `Content-Security-Policy` = "default-src 'none'; form-action 'self'; base-uri 'none'"),
+        curation_auth_http_login_page(config$public_login_path, config$login_title),
+        headers = list(`Content-Type` = "text/html; charset=utf-8", `Content-Security-Policy` = "default-src 'none'; form-action 'self'; base-uri 'none'", `Referrer-Policy` = "same-origin"),
         request_method = method
       ))
     }
@@ -412,7 +431,7 @@ curation_auth_http_response <- function(auth, request, config) {
       303L,
       "",
       headers = list(
-        Location = config$login_path,
+        Location = config$public_login_path,
         `Set-Cookie` = curation_auth_expire_cookie_header(
           cookie_name = config$cookie_name, path = config$cookie_path
         )
@@ -505,9 +524,13 @@ curation_auth_http_app <- function(auth, config) {
 #' @param cookie_name Opaque session-cookie name.
 #' @param blocking Keep servicing the server until interrupted. Native service
 #'   runners should use the default; tests can set `FALSE` and call `$stop()`.
-#' @param login_path Optional public login route override.
+#' @param login_path Optional internal login-handler route override. The
+#'   browser-visible form action is `public_login_path`.
+#' @param public_login_path Browser-visible login route, normally `/app/login`.
 #' @param check_path Optional internal auth-request route override.
-#' @param logout_path Optional logout route override.
+#' @param logout_path Optional internal logout-handler route override.
+#' @param public_logout_path Browser-visible logout route, normally
+#'   `/app/logout`.
 #' @param health_path Optional health route override.
 #' @param public_origin Backward-compatible alias for `expected_origin`.
 #' @param trusted_proxy_header Optional exact header nginx sets on internal
@@ -516,6 +539,8 @@ curation_auth_http_app <- function(auth, config) {
 #' @param trusted_proxy_value Required value for `trusted_proxy_header`.
 #' @param max_body_bytes Maximum login form body size.
 #' @param cookie_max_age Cookie lifetime in seconds.
+#' @param login_title Plain-text heading for the login form. Defaults to the
+#'   generic `Curation login`; project deployment runners may supply branding.
 #' @param quiet Suppress httpuv startup diagnostics.
 #' @param ... Reserved for deployment-runner compatibility; route and origin
 #'   options should be supplied through their named arguments.
@@ -531,14 +556,17 @@ curation_auth_http_gate <- function(
   cookie_name = "biogain_session",
   blocking = TRUE,
   login_path = NULL,
+  public_login_path = NULL,
   check_path = NULL,
   logout_path = NULL,
+  public_logout_path = NULL,
   health_path = NULL,
   public_origin = NULL,
   trusted_proxy_header = NULL,
   trusted_proxy_value = "1",
   max_body_bytes = 8192L,
   cookie_max_age = 43200L,
+  login_title = "Curation login",
   quiet = FALSE,
   ...
 ) {
@@ -558,14 +586,17 @@ curation_auth_http_gate <- function(
     app_path = app_path,
     cookie_name = cookie_name,
     login_path = login_path,
+    public_login_path = public_login_path,
     check_path = check_path,
     logout_path = logout_path,
+    public_logout_path = public_logout_path,
     health_path = health_path,
     public_origin = public_origin,
     trusted_proxy_header = trusted_proxy_header,
     trusted_proxy_value = trusted_proxy_value,
     max_body_bytes = max_body_bytes,
-    cookie_max_age = cookie_max_age
+    cookie_max_age = cookie_max_age,
+    login_title = login_title
   )
   curation_auth_http_require_package(
     "httpuv", "The HTTP authentication gate needs the optional httpuv package."

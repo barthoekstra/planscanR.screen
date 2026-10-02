@@ -27,9 +27,13 @@ and requires `httpuv` at start-up.
 ## Routes
 
 With the defaults, the gate exposes these routes. A deployment runner may pass
-explicit `login_path`, `check_path`, `logout_path`, and `health_path` values;
-the current native profile uses `/auth/login`, `/auth/check`, `/auth/logout`,
-and `/healthz` while the protected application prefix remains `/app/`.
+explicit internal handler paths through `login_path`, `check_path`,
+`logout_path`, and `health_path`; the current native profile uses
+`/auth/login`, `/auth/check`, `/auth/logout`, and `/healthz` while the protected
+application prefix remains `/app/`. `public_login_path` and
+`public_logout_path` remain `/app/login` and `/app/logout`, so nginx can proxy
+the public routes to the internal handlers without changing the browser form
+action or redirect target.
 
 | Route | Methods | Behavior |
 | --- | --- | --- |
@@ -72,10 +76,11 @@ The actual Shiny request resolver performs the touch for an authorized app
 request.
 
 For a forwarded WebSocket or state-changing request, the gate compares the
-forwarded original `Origin` to the exact configured HTTPS origin. Missing and
-foreign origins fail closed. The Shiny app still resolves the opaque cookie on
-each request; the actor and role response headers are an auth-subrequest
-diagnostic for nginx and are not identity credentials.
+canonical `Origin` header overwritten by nginx to the exact configured HTTPS
+origin. It intentionally ignores client-supplied `X-Original-Origin` aliases.
+Missing and foreign origins fail closed. The Shiny app still resolves the
+opaque cookie on each request; the actor and role response headers are an
+auth-subrequest diagnostic for nginx and are not identity credentials.
 
 ## Request and secret handling
 

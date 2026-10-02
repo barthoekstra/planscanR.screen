@@ -120,6 +120,15 @@ curation_app_active_reviews <- function(rows) {
   rows[!rows$deleted & !is.na(rows$decision) & nzchar(rows$decision), , drop = FALSE]
 }
 
+curation_app_admin_roles <- function() {
+  c("admin", "curation_admin", "review_admin")
+}
+
+curation_app_is_admin <- function(actor) {
+  is.list(actor) && !is.null(actor$roles) &&
+    any(as.character(actor$roles) %in% curation_app_admin_roles())
+}
+
 curation_app_key_string <- function(country, document_id, reviewer_id = NULL) {
   if (length(country) == 0L || length(document_id) == 0L) {
     return(character(0))
@@ -143,6 +152,67 @@ curation_app_current_revision <- function(rows, country, document_id, reviewer_i
     return(0L)
   }
   as.integer(rows$revision[which(hit)[1L]])
+}
+
+curation_app_review_revision_lookup <- function(rows, reviewer_id) {
+  rows <- curation_app_normalize_reviews(rows)
+  if (nrow(rows) == 0L) {
+    return(stats::setNames(integer(0), character(0)))
+  }
+  rows <- rows[rows$reviewer_id == as.character(reviewer_id), , drop = FALSE]
+  if (nrow(rows) == 0L) {
+    return(stats::setNames(integer(0), character(0)))
+  }
+  revisions <- as.integer(rows$revision)
+  revisions[is.na(revisions) | revisions < 0L] <- 0L
+  stats::setNames(
+    revisions,
+    curation_app_key_string(rows$country, rows$document_id, reviewer_id)
+  )
+}
+
+curation_app_attach_review_revisions <- function(data, rows, reviewer_id) {
+  data <- as.data.frame(data, stringsAsFactors = FALSE)
+  lookup <- curation_app_review_revision_lookup(rows, reviewer_id)
+  keys <- curation_app_key_string(data$country, data$document_id, reviewer_id)
+  data$review_revision <- as.integer(lookup[keys])
+  data$review_revision[is.na(data$review_revision) | data$review_revision < 0L] <- 0L
+  data
+}
+
+curation_app_review_display_rows <- function(data, rows, reviewer_id) {
+  data <- curation_app_attach_review_revisions(data, rows, reviewer_id)
+  if (nrow(data) == 0L) {
+    return(list())
+  }
+  lapply(seq_len(nrow(data)), function(i) {
+    list(
+      index = as.integer(i - 1L),
+      country = as.character(data$country[[i]]),
+      document_id = as.character(data$document_id[[i]]),
+      revision = as.integer(data$review_revision[[i]])
+    )
+  })
+}
+
+curation_app_review_display_token <- function(data, rows, reviewer_id) {
+  curation_artifact_content_fingerprint(
+    curation_app_review_display_rows(data, rows, reviewer_id)
+  )
+}
+
+curation_app_validate_displayed_revision <- function(value) {
+  if (is.null(value) || length(value) == 0L) {
+    return(NULL)
+  }
+  value <- suppressWarnings(as.integer(value[[1L]]))
+  if (length(value) != 1L || is.na(value) || value < 0L) {
+    curation_abort(
+      "The review event did not include a valid displayed revision.",
+      class = "planscanR_error_curation_conflict"
+    )
+  }
+  value
 }
 
 curation_app_align_review_row <- function(rows, row, previous = NULL) {
@@ -209,6 +279,129 @@ curation_app_replace_review_result <- function(rows, decision, result, actor) {
   curation_app_normalize_reviews(rbind(rows, decision))
 }
 
+# Merge one canonical repository row into a session-local review frame.  A
+# refresh is deliberately a read-only operation: callers use it after a CAS
+# conflict and must never retry the stale write with the newly read revision.
+curation_app_merge_review_row <- function(rows, current) {
+  rows <- curation_app_normalize_reviews(rows)
+  if (is.null(current) || !is.data.frame(current) || nrow(current) == 0L) {
+    return(rows)
+  }
+  current <- curation_app_normalize_reviews(current[1L, , drop = FALSE])
+  hit <- rows$country == current$country[[1L]] &
+    rows$document_id == current$document_id[[1L]] &
+    rows$reviewer_id == current$reviewer_id[[1L]]
+  previous <- if (any(hit)) rows[which(hit)[[1L]], , drop = FALSE] else NULL
+  if (any(hit)) rows <- rows[!hit, , drop = FALSE]
+  current <- curation_app_align_review_row(rows, current, previous)
+  curation_app_normalize_reviews(rbind(rows, current))
+}
+
+curation_app_review_keys <- function(rows) {
+  rows <- curation_app_normalize_reviews(rows)
+  if (nrow(rows) == 0L) return(character(0))
+  curation_app_key_string(rows$country, rows$document_id, rows$reviewer_id)
+}
+
+# Merge a repository poll without replacing a review that the browser is in
+# the middle of saving.  The pending key remains at its last locally observed
+# revision, so a later write still gets a CAS conflict instead of silently
+# advancing over another actor's change.
+curation_app_merge_reviews_preserving_pending <- function(
+  local,
+  incoming,
+  pending_keys = character(0)
+) {
+  local <- curation_app_normalize_reviews(local)
+  incoming <- curation_app_normalize_reviews(incoming)
+  pending_keys <- unique(as.character(pending_keys %||% character(0)))
+  if (nrow(incoming) == 0L) return(local)
+  for (i in seq_len(nrow(incoming))) {
+    row <- incoming[i, , drop = FALSE]
+    key <- curation_app_key_string(row$country, row$document_id, row$reviewer_id)
+    if (key %in% pending_keys) next
+    existing <- curation_app_review_keys(local) == key
+    if (any(existing)) local <- local[!existing, , drop = FALSE]
+    local <- curation_app_normalize_reviews(rbind(local, row))
+  }
+  local
+}
+
+curation_app_review_refresh_updates <- function(
+  local,
+  incoming,
+  pending_keys = character(0)
+) {
+  local <- curation_app_normalize_reviews(local)
+  incoming <- curation_app_normalize_reviews(incoming)
+  pending_keys <- unique(as.character(pending_keys %||% character(0)))
+  if (nrow(incoming) == 0L) return(list())
+  updates <- list()
+  local_keys <- curation_app_review_keys(local)
+  for (i in seq_len(nrow(incoming))) {
+    row <- incoming[i, , drop = FALSE]
+    key <- curation_app_key_string(row$country, row$document_id, row$reviewer_id)
+    if (key %in% pending_keys) next
+    hit <- which(local_keys == key)
+    old_decision <- if (length(hit) == 0L) {
+      NULL
+    } else if (isTRUE(local$deleted[[hit[[1L]]]]) || is.na(local$decision[[hit[[1L]]]])) {
+      NULL
+    } else {
+      as.character(local$decision[[hit[[1L]]]])
+    }
+    new_decision <- if (isTRUE(row$deleted[[1L]]) || is.na(row$decision[[1L]])) {
+      NULL
+    } else {
+      as.character(row$decision[[1L]])
+    }
+    old_revision <- if (length(hit) == 0L) 0L else as.integer(local$revision[[hit[[1L]]]])
+    new_revision <- as.integer(row$revision[[1L]])
+    if (is.na(old_revision)) old_revision <- 0L
+    if (is.na(new_revision)) new_revision <- 0L
+    if (!identical(old_decision, new_decision) || !identical(old_revision, new_revision)) {
+      updates[[length(updates) + 1L]] <- list(
+        key = key,
+        decision = new_decision,
+        revision = new_revision
+      )
+    }
+  }
+  updates
+}
+
+curation_app_canonical_review_update <- function(rows, key) {
+  rows <- curation_app_normalize_reviews(rows)
+  hit <- rows$country == as.character(key$country) &
+    rows$document_id == as.character(key$document_id) &
+    rows$reviewer_id == as.character(key$reviewer_id)
+  if (!any(hit)) {
+    return(list(
+      key = curation_app_key_string(key$country, key$document_id, key$reviewer_id),
+      decision = NULL,
+      revision = 0L
+    ))
+  }
+  row <- rows[which(hit)[[1L]], , drop = FALSE]
+  list(
+    key = curation_app_key_string(row$country[[1L]], row$document_id[[1L]], row$reviewer_id[[1L]]),
+    decision = if (isTRUE(row$deleted[[1L]]) || is.na(row$decision[[1L]])) NULL else as.character(row$decision[[1L]]),
+    revision = if (is.na(row$revision[[1L]])) 0L else as.integer(row$revision[[1L]])
+  )
+}
+
+curation_app_refresh_review <- function(rows, repository, scope, key, actor) {
+  current <- curation_review_read(repository, scope, key, actor)
+  if (is.null(current)) {
+    rows <- curation_app_normalize_reviews(rows)
+    hit <- rows$country == key$country &
+      rows$document_id == key$document_id &
+      rows$reviewer_id == key$reviewer_id
+    return(rows[!hit, , drop = FALSE])
+  }
+  curation_app_merge_review_row(rows, current)
+}
+
 curation_app_record_key <- function(row) {
   list(country = as.character(row$country[[1L]]), document_id = as.character(row$document_id[[1L]]))
 }
@@ -221,6 +414,26 @@ curation_app_request_for_session <- function(request, session) {
     return(list(session = session))
   }
   request
+}
+
+curation_app_resolve_current_actor <- function(
+  context,
+  session,
+  initial_actor,
+  resolver = context$actor_resolver
+) {
+  curation_app_check_actor_resolver(resolver)
+  current <- curation_resolve_actor(
+    resolver,
+    curation_app_request_for_session(context$request, session)
+  )
+  if (!identical(current$id, initial_actor$id)) {
+    curation_abort(
+      "The authenticated actor changed; reload the curation session.",
+      class = "planscanR_error_curation_actor"
+    )
+  }
+  current
 }
 
 curation_app_translate <- function(config, row) {
@@ -292,7 +505,7 @@ curation_app_record_detail <- function(row, config) {
   )
 }
 
-curation_app_decision_cell <- function(source, reviewer_id) {
+curation_app_decision_cell <- function(source, reviewer_id, render_id = NULL) {
   js_literal <- function(value) {
     value <- gsub("\\\\", "\\\\\\\\", as.character(value))
     value <- gsub("'", "\\'", value, fixed = TRUE)
@@ -301,6 +514,7 @@ curation_app_decision_cell <- function(source, reviewer_id) {
     value <- gsub("\u2028", "\\u2028", value, fixed = TRUE)
     gsub("\u2029", "\\u2029", value, fixed = TRUE)
   }
+  render_attr <- if (is.null(render_id)) "" else paste0(" data-render-id=\"", js_literal(render_id), "\"")
   reactable::JS(sprintf(
     "function(cellInfo) {
       var src = '%s';
@@ -308,10 +522,15 @@ curation_app_decision_cell <- function(source, reviewer_id) {
       var country = cellInfo.row['country'];
       var rid = '%s';
       var key = String(country) + '::' + String(id) + '::' + rid;
+      var revision = cellInfo.row['review_revision'];
       var val = cellInfo.value;
       if (window.__curationReviewState === undefined) window.__curationReviewState = {};
+      if (window.__curationReviewRevision === undefined) window.__curationReviewRevision = {};
       if (!(key in window.__curationReviewState)) {
         window.__curationReviewState[key] = (val === null || val === undefined) ? null : val;
+      }
+      if (!(key in window.__curationReviewRevision) || window.__curationReviewRevision[key] === undefined) {
+        window.__curationReviewRevision[key] = Number(revision) || 0;
       }
       var cur = window.__curationReviewState[key];
       function attr(s) {
@@ -331,20 +550,94 @@ curation_app_decision_cell <- function(source, reviewer_id) {
       }
       return '<div class=\"curation-decision-group\" data-review-id=\"' + attr(key) +
         '\" data-record-id=\"' + attr(id) + '\" data-country=\"' + attr(country) +
-        '\" data-source=\"' + attr(src) + '\" data-reviewer=\"' + attr(rid) + '\">' +
+        '\" data-source=\"' + attr(src) + '\" data-reviewer=\"' + attr(rid) +
+        '\" data-revision=\"' + attr(revision) + '\"%s>' +
         btn('keep','Keep','#1a9850') + btn('drop','Drop','#d73027') + btn('unsure','?','#fc8d59') + '</div>';
     }",
     js_literal(source),
-    js_literal(reviewer_id)
+    js_literal(reviewer_id),
+    render_attr
   ))
 }
 
-curation_app_table <- function(data, reviews, config, source = "browse", blind = FALSE, reviewer_id) {
+curation_app_admin_decision_cell <- function() {
+  reactable::JS(
+    "function(cellInfo) {
+      var id = cellInfo.row['document_id'];
+      var country = cellInfo.row['country'];
+      var rid = cellInfo.row['reviewer_id'];
+      var revision = cellInfo.row['review_revision'];
+      var key = String(country) + '::' + String(id) + '::' + String(rid);
+      var val = cellInfo.value;
+      if (window.__curationReviewState === undefined) window.__curationReviewState = {};
+      if (!(key in window.__curationReviewState)) {
+        window.__curationReviewState[key] = (val === null || val === undefined) ? null : val;
+      }
+      function attr(s) {
+        return String(s)
+          .replace(/&/g, '&amp;')
+          .replace(/\\r/g, '&#13;')
+          .replace(/\\n/g, '&#10;')
+          .replace(/\\\"/g, '&quot;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;');
+      }
+      function btn(dec, label, color) {
+        var active = (val === dec) ? ' active' : '';
+        return '<button type=\"button\" class=\"curation-decision' + active + '\"' +
+          ' data-decision=\"' + attr(dec) + '\" style=\"--curation-color:' + attr(color) + '\"' +
+          '>' + label + '</button>';
+      }
+      return '<div class=\"curation-decision-group\" data-admin=\"true\" data-review-id=\"' + attr(key) +
+        '\" data-record-id=\"' + attr(id) + '\" data-country=\"' + attr(country) +
+        '\" data-source=\"admin\" data-reviewer=\"' + attr(rid) +
+        '\" data-revision=\"' + attr(revision) + '\">' +
+        btn('keep','Keep','#1a9850') + btn('drop','Drop','#d73027') + btn('unsure','?','#fc8d59') + '</div>';
+    }"
+  )
+}
+
+curation_app_admin_table <- function(rows) {
+  rows <- curation_app_active_reviews(rows)
+  if (nrow(rows) == 0L) {
+    return(reactable::reactable(data.frame(Note = "No active reviews are available."), pagination = FALSE))
+  }
+  rows$review_revision <- as.integer(rows$revision)
+  rows$decision <- as.character(rows$decision)
+  columns <- list(
+    decision = reactable::colDef(
+      name = "Review", sticky = "left", width = 160, sortable = FALSE,
+      filterable = FALSE, html = TRUE, cell = curation_app_admin_decision_cell()
+    ),
+    country = reactable::colDef(name = "Country", width = 90, align = "center"),
+    document_id = reactable::colDef(name = "Document", width = 150),
+    reviewer_id = reactable::colDef(name = "Target reviewer", width = 160),
+    source = reactable::colDef(name = "Source", width = 100),
+    revision = reactable::colDef(name = "Revision", width = 90, align = "center")
+  )
+  show <- c("decision", "country", "document_id", "reviewer_id", "source", "revision")
+  for (name in setdiff(names(rows), show)) columns[[name]] <- reactable::colDef(show = FALSE)
+  reactable::reactable(
+    rows[, unique(c(show, setdiff(names(rows), show))), drop = FALSE],
+    columns = columns,
+    searchable = TRUE,
+    filterable = TRUE,
+    resizable = TRUE,
+    pagination = TRUE,
+    defaultPageSize = 25,
+    compact = TRUE,
+    highlight = TRUE,
+    defaultColDef = reactable::colDef(headerStyle = list(whiteSpace = "normal"))
+  )
+}
+
+curation_app_table <- function(data, reviews, config, source = "browse", blind = FALSE, reviewer_id, render_id = NULL) {
   data <- as.data.frame(data, stringsAsFactors = FALSE)
   if (nrow(data) == 0L) {
     return(reactable::reactable(data.frame(Note = "No records match this view."), pagination = FALSE))
   }
-  reviews <- curation_app_active_reviews(reviews)
+  all_reviews <- curation_app_normalize_reviews(reviews)
+  reviews <- curation_app_active_reviews(all_reviews)
   lookup <- stats::setNames(
     reviews$decision[reviews$reviewer_id == reviewer_id],
     curation_app_key_string(
@@ -354,6 +647,7 @@ curation_app_table <- function(data, reviews, config, source = "browse", blind =
     )
   )
   data$decision <- unname(lookup[curation_app_key_string(data$country, data$document_id, reviewer_id)])
+  data <- curation_app_attach_review_revisions(data, all_reviews, reviewer_id)
   has_model <- "select_prob" %in% names(data) && any(!is.na(data$select_prob))
   trunc_cell <- function(value) {
     htmltools::div(
@@ -365,7 +659,7 @@ curation_app_table <- function(data, reviews, config, source = "browse", blind =
   cols <- list(
     decision = reactable::colDef(
       name = "Review", sticky = "left", width = 160, sortable = FALSE,
-      filterable = FALSE, html = TRUE, cell = curation_app_decision_cell(source, reviewer_id)
+      filterable = FALSE, html = TRUE, cell = curation_app_decision_cell(source, reviewer_id, render_id)
     ),
     country = reactable::colDef(name = "Country", width = 90, align = "center"),
     document_id = reactable::colDef(name = "Document", width = 130),
@@ -473,8 +767,21 @@ curation_app_single_record_ui <- function(row, config) {
   )
 }
 
-curation_app_ui <- function(config) {
+curation_app_validate_logout_path <- function(logout_path) {
+  if (is.null(logout_path)) return(NULL)
+  if (!is.character(logout_path) || length(logout_path) != 1L ||
+      is.na(logout_path) || !grepl("^/[A-Za-z0-9._/-]+$", logout_path)) {
+    curation_abort(
+      "{.arg logout_path} must be an absolute local path containing only URL path characters.",
+      class = "planscanR_error_curation_config"
+    )
+  }
+  logout_path
+}
+
+curation_app_ui <- function(config, logout_path = NULL) {
   curation_app_require_ui()
+  logout_path <- curation_app_validate_logout_path(logout_path)
   selection_defaults <- config$selection_controls
   default_value <- function(name, fallback) {
     value <- selection_defaults[[name]]
@@ -532,12 +839,66 @@ curation_app_ui <- function(config) {
       )),
       htmltools::tags$script(htmltools::HTML(
         "window.__curationReviewState = window.__curationReviewState || {};",
-        "window.curationReviewSet = function(id, country, decision, source, reviewer) {",
+        "window.__curationReviewRevision = window.__curationReviewRevision || {};",
+        "window.__curationDisplayedRows = window.__curationDisplayedRows || {};",
+        "window.__curationDisplayedPending = window.__curationDisplayedPending || {};",
+        "window.curationReviewSet = function(id, country, decision, source, reviewer, revision) {",
         "  var key = String(country) + '::' + String(id) + '::' + String(reviewer || window.__curationReviewerId || '');",
         "  var current = window.__curationReviewState[key];",
         "  var next = current === decision ? null : decision;",
+        "  var displayedRevision = Number(revision);",
+        "  if (revision === null || revision === undefined || !isFinite(displayedRevision) || displayedRevision < 0) return;",
         "  window.__curationReviewState[key] = next;",
-        "  if (window.Shiny) window.Shiny.setInputValue('row_decision', {id:id, country:country, decision:next, source:source, nonce:Date.now() + Math.random()}, {priority:'event'});",
+        "  if (window.Shiny) window.Shiny.setInputValue('row_decision', {id:id, country:country, decision:next, source:source, revision:displayedRevision, nonce:Date.now() + Math.random()}, {priority:'event'});",
+        "};",
+        "window.__curationCaptureBulkRevision = function(tableId) {",
+        "  if (!window.Shiny || !window.Reactable || !window.Reactable.getState) return;",
+        "  var container = document.getElementById(tableId);",
+        "  var state = window.Reactable.getState(tableId) || {};",
+        "  var displayed = window.__curationDisplayedRows[tableId] || {};",
+        "  if (!container || !displayed.render_id) return;",
+        "  var rows = [];",
+        "  var seen = {};",
+        "  (state.selected || []).forEach(function(index) {",
+        "    var row = displayed.rows && displayed.rows[String(index)];",
+        "    if (!row) return;",
+        "    var key = String(row.country) + '::' + String(row.document_id);",
+        "    if (seen[key]) return;",
+        "    seen[key] = true;",
+        "    rows.push({country:row.country, document_id:row.document_id, revision:Number(row.revision)});",
+        "  });",
+        "  window.Shiny.setInputValue('review_bulk_display', {table_id:tableId, render_id:displayed.render_id, rows:rows, nonce:Date.now() + Math.random()}, {priority:'event'});",
+        "};",
+        "window.__curationCommitDisplayed = function(tableId) {",
+        "  var pending = window.__curationDisplayedPending[tableId];",
+        "  var container = document.getElementById(tableId);",
+        "  if (!pending || !container) return;",
+        "  var groups = container.querySelectorAll('.curation-decision-group');",
+        "  if (groups.length === 0 && (pending.rows || []).length > 0) return;",
+        "  var rows = {};",
+        "  var expected = {};",
+        "  (pending.rows || []).forEach(function(row) {",
+        "    if (!row) return;",
+        "    rows[String(row.index)] = row;",
+        "    expected[String(row.country) + '::' + String(row.document_id)] = String(row.revision);",
+        "  });",
+        "  var matched = 0;",
+        "  var seen = {};",
+        "  var valid = true;",
+        "  Array.prototype.forEach.call(groups, function(group) {",
+        "    if (String(group.getAttribute('data-render-id')) !== String(pending.render_id)) { valid = false; return; }",
+        "    var key = String(group.getAttribute('data-country')) + '::' + String(group.getAttribute('data-record-id'));",
+        "    if (seen[key] || expected[key] === undefined || expected[key] !== String(group.getAttribute('data-revision'))) { valid = false; return; }",
+        "    seen[key] = true; matched += 1;",
+        "  });",
+        "  if (valid && matched === groups.length) window.__curationDisplayedRows[tableId] = {render_id:pending.render_id, rows:rows};",
+        "};",
+        "window.__curationObserveDisplayed = function(tableId) {",
+        "  var container = document.getElementById(tableId);",
+        "  if (!container || container.__curationObserved) return;",
+        "  container.__curationObserved = true;",
+        "  new MutationObserver(function() { window.__curationCommitDisplayed(tableId); }).observe(container, {childList:true, subtree:true});",
+        "  setTimeout(function() { window.__curationCommitDisplayed(tableId); }, 100);",
         "};",
         "window.__curationRefreshDecisionButtons = function() {",
         "  document.querySelectorAll('[data-review-id]').forEach(function(group) {",
@@ -551,17 +912,65 @@ curation_app_ui <- function(config) {
         "  window.Shiny.addCustomMessageHandler('curationSetReviewer', function(message) { window.__curationReviewerId = message.id || ''; });",
         "  window.Shiny.addCustomMessageHandler('curationBulkDecision', function(message) {",
         "    (message.keys || []).forEach(function(key) { window.__curationReviewState[key] = message.decision || null; });",
+        "    (message.updates || []).forEach(function(update) {",
+        "      if (!update || !update.key) return;",
+        "      window.__curationReviewState[update.key] = update.decision == null ? null : String(update.decision);",
+        "      if (update.revision != null) window.__curationReviewRevision[update.key] = Number(update.revision) || 0;",
+        "    });",
+        "    window.__curationRefreshDecisionButtons();",
+        "  });",
+        "  window.Shiny.addCustomMessageHandler('curationReviewDisplayed', function(message) {",
+        "    window.__curationDisplayedPending[message.table_id] = {render_id:message.render_id, rows:message.rows || []};",
+        "    window.__curationObserveDisplayed(message.table_id);",
+        "    setTimeout(function() { window.__curationCommitDisplayed(message.table_id); }, 100);",
+        "    setTimeout(function() { window.__curationObserveDisplayed(message.table_id); window.__curationCommitDisplayed(message.table_id); }, 300);",
+        "  });",
+        "  window.Shiny.addCustomMessageHandler('curationReviewRefresh', function(message) {",
+        "    (message.updates || []).forEach(function(update) {",
+        "      if (!update || !update.key) return;",
+        "      window.__curationReviewState[update.key] = update.decision == null ? null : String(update.decision);",
+        "      if (update.revision != null) window.__curationReviewRevision[update.key] = Number(update.revision) || 0;",
+        "    });",
         "    window.__curationRefreshDecisionButtons();",
         "  });",
         "}",
         "document.addEventListener('click', function(event) {",
+        "  var action = event.target && event.target.closest ? event.target.closest('button') : null;",
+        "  if (!action || !window.Shiny) return;",
+        "  var decision = {sr_keep:'keep', sr_drop:'drop', sr_unsure:'unsure'}[action.id];",
+        "  if (!decision) return;",
+        "  var countryNode = document.getElementById('sr_displayed_country');",
+        "  var documentNode = document.getElementById('sr_displayed_document_id');",
+        "  var reviewerNode = document.getElementById('sr_displayed_reviewer');",
+        "  var revisionNode = document.getElementById('sr_displayed_revision');",
+        "  var country = countryNode && countryNode.value;",
+        "  var documentId = documentNode && documentNode.value;",
+        "  var reviewer = reviewerNode && reviewerNode.value;",
+        "  var revision = revisionNode && Number(revisionNode.value);",
+        "  event.preventDefault();",
+        "  event.stopImmediatePropagation();",
+        "  if (!country || !documentId || !reviewer || !isFinite(revision) || revision < 0) return;",
+        "  window.Shiny.setInputValue('sr_decision', {country:country, document_id:documentId, reviewer:reviewer, decision:decision, revision:revision, nonce:Date.now() + Math.random()}, {priority:'event'});",
+        "}, true);",
+        "document.addEventListener('click', function(event) {",
+        "  var action = event.target && event.target.closest ? event.target.closest('button') : null;",
+        "  if (action && window.__curationCaptureBulkRevision) {",
+        "    if (['mark_keep','mark_drop','mark_unsure','mark_clear'].indexOf(action.id) >= 0) window.__curationCaptureBulkRevision('review_tbl');",
+        "    if (['rnd_keep','rnd_drop','rnd_unsure','rnd_clear'].indexOf(action.id) >= 0) window.__curationCaptureBulkRevision('random_tbl');",
+        "  }",
         "  var button = event.target && event.target.closest ? event.target.closest('button.curation-decision') : null;",
         "  if (!button) return;",
         "  var group = button.closest('.curation-decision-group');",
         "  if (!group) return;",
         "  event.stopPropagation();",
-        "  window.curationReviewSet(group.getAttribute('data-record-id'), group.getAttribute('data-country'), button.getAttribute('data-decision'), group.getAttribute('data-source'), group.getAttribute('data-reviewer'));",
-        "});",
+        "  if (group.getAttribute('data-admin') === 'true') {",
+        "    var adminRevision = Number(group.getAttribute('data-revision'));",
+        "    if (!isFinite(adminRevision) || adminRevision < 0 || !window.Shiny) return;",
+        "    window.Shiny.setInputValue('admin_row_decision', {country:group.getAttribute('data-country'), document_id:group.getAttribute('data-record-id'), reviewer:group.getAttribute('data-reviewer'), decision:button.getAttribute('data-decision'), revision:adminRevision, nonce:Date.now() + Math.random()}, {priority:'event'});",
+        "    return;",
+        "  }",
+        "  window.curationReviewSet(group.getAttribute('data-record-id'), group.getAttribute('data-country'), button.getAttribute('data-decision'), group.getAttribute('data-source'), group.getAttribute('data-reviewer'), group.getAttribute('data-revision'));",
+        "}, true);",
         "document.addEventListener('keydown', function(event) {",
         "  var tag = (event.target && event.target.tagName || '').toLowerCase();",
         "  if (tag === 'input' || tag === 'textarea' || tag === 'select' || event.altKey || event.ctrlKey || event.metaKey) return;",
@@ -574,6 +983,18 @@ curation_app_ui <- function(config) {
     sidebar = bslib$sidebar(
       width = 300,
       shiny$uiOutput("actor_info"),
+      if (!is.null(logout_path)) {
+        htmltools::tags$form(
+          action = logout_path,
+          method = "post",
+          style = "margin:0 0 12px;",
+          htmltools::tags$button(
+            type = "submit",
+            class = "btn btn-outline-secondary btn-sm",
+            "Log out"
+          )
+        )
+      },
       shiny$selectInput("countries", "Countries", choices = character(0), multiple = TRUE),
       shiny$uiOutput("country_labels_summary"),
       shiny$actionButton("show_label_counts", "Label counts by country", class = "btn-outline-secondary btn-sm"),
@@ -650,8 +1071,11 @@ curation_app_ui <- function(config) {
           shiny$textOutput("review_info", inline = TRUE)
         ),
         shiny$helpText("Select rows for bulk actions. Click a row to expand the original and optional translated text."),
-        reactable::reactableOutput("review_tbl")
-      )
+        reactable::reactableOutput("review_tbl"),
+        min_height = "520px",
+        class = "curation-review-card"
+      ),
+      shiny$uiOutput("admin_review_ui")
     ),
     bslib$nav_panel(
       "Random review",
@@ -715,11 +1139,23 @@ curation_app_read_model <- function(store, scope, actor, config) {
   if (inherits(active, "planscanR_selection_model")) {
     return(active)
   }
-  payload <- active$model %||% active$payload
+  payload <- if (is.list(active) && "model" %in% names(active)) {
+    active[["model"]]
+  } else if (is.list(active) && "payload" %in% names(active)) {
+    active[["payload"]]
+  } else {
+    NULL
+  }
   if (inherits(payload, "planscanR_selection_model")) {
     return(payload)
   }
-  model_id <- active$active_model_id %||% active$model_id
+  model_id <- if (is.list(active) && "active_model_id" %in% names(active)) {
+    active[["active_model_id"]]
+  } else if (is.list(active) && "model_id" %in% names(active)) {
+    active[["model_id"]]
+  } else {
+    NULL
+  }
   if (is.null(model_id)) {
     return(NULL)
   }
@@ -730,7 +1166,14 @@ curation_app_read_model <- function(store, scope, actor, config) {
   if (is.null(loaded)) {
     return(NULL)
   }
-  loaded$model %||% loaded$payload %||% loaded
+  loaded_payload <- if (is.list(loaded) && "model" %in% names(loaded)) {
+    loaded[["model"]]
+  } else if (is.list(loaded) && "payload" %in% names(loaded)) {
+    loaded[["payload"]]
+  } else {
+    NULL
+  }
+  if (inherits(loaded_payload, "planscanR_selection_model")) loaded_payload else NULL
 }
 
 curation_app_read_sample <- function(store, scope, actor) {
@@ -745,8 +1188,12 @@ curation_app_read_sample <- function(store, scope, actor) {
   if (length(id_column) == 0L) {
     return(list(id = NULL, revision = 0L, queue = tibble::tibble(document_id = character(0), country = character(0))))
   }
-  id <- as.character(listed[[id_column[[1L]]]][[1L]])
-  revision <- if ("revision" %in% names(listed)) as.integer(listed$revision[[1L]]) else 0L
+  # Samples are immutable.  The newest row is the session's restart point;
+  # choosing the first row would silently restore an older queue after a
+  # reviewer drew a second sample.
+  latest <- nrow(listed)
+  id <- as.character(listed[[id_column[[1L]]]][[latest]])
+  revision <- if ("revision" %in% names(listed)) as.integer(listed$revision[[latest]]) else 0L
   read <- tryCatch(curation_artifact_read_sample(store, scope, id, actor), error = function(e) NULL)
   payload <- if (is.null(read)) NULL else read$payload %||% read$sample %||% read
   queue <- if (is.list(payload) && is.data.frame(payload$queue)) payload$queue else if (is.data.frame(payload)) payload else NULL
@@ -756,21 +1203,99 @@ curation_app_read_sample <- function(store, scope, actor) {
   list(id = id, revision = revision, queue = queue)
 }
 
-curation_app_read_snapshot <- function(store, scope, actor) {
+curation_app_read_snapshot <- function(store, scope, actor, version = NULL) {
   snapshot <- tryCatch(
-    curation_artifact_read_snapshot(store, scope, actor),
+    curation_artifact_read_snapshot(store, scope, actor, version = version),
     error = function(e) NULL
   )
   if (is.null(snapshot)) {
     return(list(records = NULL, id = NULL, version = NULL, revision = 0L))
   }
   payload <- snapshot$payload %||% snapshot$snapshot %||% snapshot
-  records <- if (is.list(payload) && is.data.frame(payload$records)) payload$records else if (is.data.frame(payload)) payload else NULL
+  payload_is_list <- is.list(payload) && !is.data.frame(payload)
+  records <- if (payload_is_list && is.data.frame(payload$records)) payload$records else if (is.data.frame(payload)) payload else NULL
   list(
     records = records,
-    id = snapshot$snapshot_id %||% snapshot$id %||% if (is.list(payload)) payload$snapshot_id else NULL,
-    version = snapshot$version %||% if (is.list(payload)) payload$version else NULL,
-    revision = as.integer(snapshot$revision %||% if (is.list(payload)) payload$revision else 0L)
+    id = snapshot$snapshot_id %||% snapshot$id %||% if (payload_is_list) payload$snapshot_id else NULL,
+    version = snapshot$version %||% if (payload_is_list) payload$version else NULL,
+    revision = as.integer(snapshot$revision %||% if (payload_is_list) payload$revision else 0L),
+    metadata = snapshot$metadata %||% if (payload_is_list) {
+      payload$metadata
+    } else {
+      attr(payload, "curation_snapshot_metadata", exact = TRUE)
+    } %||% list()
+  )
+}
+
+curation_app_snapshot_config_matches <- function(snapshot_info, config) {
+  metadata <- snapshot_info$metadata
+  if (!is.list(metadata) || is.null(metadata$config_fingerprint)) {
+    return(FALSE)
+  }
+  expected <- tryCatch(curation_config_fingerprint(config), error = function(e) NULL)
+  identical(as.character(metadata$config_fingerprint), as.character(expected))
+}
+
+curation_app_model_provenance <- function(
+  scope,
+  config,
+  records,
+  reviews,
+  actor,
+  snapshot_version = NULL,
+  learner_key,
+  eval_source,
+  threshold
+) {
+  curation_check_scope(scope, class = "planscanR_error_curation_artifact")
+  curation_check_config(config)
+  curation_check_actor(actor)
+  version <- snapshot_version %||% curation_snapshot_version(records, scope, config = config)
+  if (!is.character(version) || length(version) != 1L || is.na(version) || !nzchar(version)) {
+    curation_abort(
+      "Model publication needs a content-derived corpus snapshot version.",
+      class = "planscanR_error_curation_artifact"
+    )
+  }
+  list(
+    review_fingerprint = curation_artifact_content_fingerprint(reviews),
+    snapshot_version = version,
+    config_fingerprint = curation_config_fingerprint(config),
+    corpus_snapshot = list(
+      corpus_id = scope$corpus_id,
+      version = version
+    ),
+    training_parameters = list(
+      learner = as.character(learner_key %||% "default"),
+      eval_source = eval_source,
+      threshold = as.numeric(threshold),
+      v = 5L,
+      repeats = 1L,
+      seed = NULL
+    ),
+    creator = actor$id
+  )
+}
+
+curation_app_sample_nonce <- local({
+  sequence <- 0L
+  function() {
+    sequence <<- sequence + 1L
+    paste(Sys.getpid(), sequence, sep = "-")
+  }
+})
+
+curation_app_new_sample_id <- function(scope, reviewer_id, queue, seed = NULL) {
+  paste0(
+    "sample-",
+    curation_artifact_hash(list(
+      scope = scope,
+      reviewer_id = reviewer_id,
+      queue = queue,
+      seed = seed,
+      created_at = format(Sys.time(), "%Y-%m-%dT%H:%M:%OS6Z", tz = "UTC"),
+      nonce = curation_app_sample_nonce()
+    ))
   )
 }
 
@@ -883,24 +1408,87 @@ curation_app_server <- function(input, output, session, context) {
     context$actor_resolver,
     curation_app_request_for_session(context$request, session)
   )
+  current_actor <- function() {
+    curation_app_resolve_current_actor(context, session, actor)
+  }
   scope <- config$identity
   reviewer_id <- actor$id
   session$sendCustomMessage("curationSetReviewer", list(id = reviewer_id))
+
+  # A session may outlive an account disablement or role change.  Recheck the
+  # resolver periodically and close the socket when its credential is no
+  # longer valid; every mutation below also calls current_actor immediately
+  # before accessing a repository or artifact store.
+  actor_probe <- context$actor_probe
+  if (!is.null(actor_probe)) {
+    curation_app_check_actor_resolver(actor_probe)
+    auth_timer <- shiny::reactiveTimer(60000, session)
+    shiny::observeEvent(auth_timer(), {
+      valid <- tryCatch(
+        curation_app_resolve_current_actor(
+          context, session, actor, resolver = actor_probe
+        ),
+        error = function(error) FALSE
+      )
+      if (isFALSE(valid) && is.function(session$close)) {
+        session$close()
+      }
+    }, ignoreInit = TRUE)
+  }
 
   read_records <- function(refresh = FALSE) {
     curation_records_snapshot(provider, config, refresh = refresh)
   }
   snapshot_info <- curation_app_read_snapshot(artifact_store, scope, actor)
-  initial_records <- if (!is.null(snapshot_info$records)) {
-    snapshot_info$records
+  # A persisted artifact is a restart optimization, not an authority about
+  # the current corpus or configuration.  Read the current provider once and
+  # compare its content-derived version before reusing the cached payload.  If
+  # the provider is temporarily unavailable, the last valid artifact remains a
+  # useful restart fallback.
+  live_records <- tryCatch(read_records(FALSE), error = identity)
+  if (inherits(live_records, "error")) {
+    if (is.null(snapshot_info$records)) {
+      shiny::showNotification(
+        paste0("Unable to load records: ", conditionMessage(live_records)),
+        type = "error", duration = 8
+      )
+      initial_records <- curation_app_empty_records()
+    } else if (!curation_app_snapshot_config_matches(snapshot_info, config)) {
+      shiny::showNotification(
+        paste0(
+          "Current records are unavailable and the persisted snapshot does not match the active configuration: ",
+          conditionMessage(live_records)
+        ),
+        type = "error", duration = 10
+      )
+      initial_records <- curation_app_empty_records()
+      snapshot_info <- list(records = NULL, id = NULL, version = NULL, revision = 0L, metadata = list())
+    } else {
+      shiny::showNotification(
+        paste0(
+          "Current records are unavailable; showing the last persisted snapshot (version ",
+          snapshot_info$version %||% "unknown", ")."
+        ),
+        type = "warning", duration = 10
+      )
+      initial_records <- snapshot_info$records
+    }
+  } else if (is.null(snapshot_info$records)) {
+    initial_records <- live_records
   } else {
-    tryCatch(
-      read_records(FALSE),
-      error = function(e) {
-        shiny::showNotification(paste0("Unable to load records: ", conditionMessage(e)), type = "error", duration = 8)
-        curation_app_empty_records()
-      }
+    live_version <- tryCatch(
+      curation_snapshot_version(live_records, scope, config = config),
+      error = function(e) NULL
     )
+    if (!is.null(snapshot_info$version) && identical(live_version, snapshot_info$version)) {
+      initial_records <- snapshot_info$records
+    } else {
+      # The cached row is for an older corpus/configuration.  Keep the live
+      # frame in this session and force the next explicit rebuild to publish a
+      # new immutable artifact with expected_revision = 0.
+      initial_records <- live_records
+      snapshot_info <- list(records = NULL, id = NULL, version = NULL, revision = 0L)
+    }
   }
   records <- shiny::reactiveVal(initial_records)
   snapshot_id <- shiny::reactiveVal(snapshot_info$id)
@@ -913,6 +1501,48 @@ curation_app_server <- function(input, output, session, context) {
       curation_app_empty_reviews()
     }
   ))
+  pending_review_keys <- shiny::reactiveVal(character(0))
+  review_display_tokens <- new.env(parent = emptyenv())
+  # Keep an already-open review view current for other actors' writes.  The
+  # non-touching probe is checked independently from the existing socket
+  # expiry timer; a revoked session is closed before its repository read.
+  if (!is.null(actor_probe)) {
+    review_timer <- shiny::reactiveTimer(60000, session)
+    shiny::observeEvent(review_timer(), {
+      refresh_actor <- tryCatch(
+        curation_app_resolve_current_actor(
+          context, session, actor, resolver = actor_probe
+        ),
+        error = identity
+      )
+      if (inherits(refresh_actor, "error")) {
+        if (is.function(session$close)) session$close()
+        return()
+      }
+      incoming <- tryCatch(
+        curation_app_read_reviews(repository, scope, refresh_actor),
+        error = identity
+      )
+      if (inherits(incoming, "error")) {
+        shiny::showNotification(
+          paste0("Review refresh failed: ", conditionMessage(incoming)),
+          type = "warning", duration = 8
+        )
+        return()
+      }
+      local <- reviews()
+      pending <- pending_review_keys()
+      updates <- curation_app_review_refresh_updates(local, incoming, pending)
+      merged <- curation_app_merge_reviews_preserving_pending(local, incoming, pending)
+      if (!identical(local, merged)) reviews(merged)
+      if (length(updates) > 0L) {
+        try(
+          session$sendCustomMessage("curationReviewRefresh", list(updates = updates)),
+          silent = TRUE
+        )
+      }
+    }, ignoreInit = TRUE)
+  }
   model <- shiny::reactiveVal(curation_app_read_model(artifact_store, scope, actor, config))
   sample_info <- curation_app_read_sample(artifact_store, scope, actor)
   sample <- shiny::reactiveVal(sample_info$queue)
@@ -953,25 +1583,56 @@ curation_app_server <- function(input, output, session, context) {
   })
 
   shiny::observeEvent(input$rebuild, {
+    mutation_actor <- tryCatch(current_actor(), error = function(e) e)
+    if (inherits(mutation_actor, "error")) {
+      shiny::showNotification(
+        paste0("Snapshot refresh failed: ", conditionMessage(mutation_actor)),
+        type = "error", duration = 8
+      )
+      return()
+    }
     fresh <- tryCatch(read_records(TRUE), error = function(e) e)
     if (inherits(fresh, "error")) {
       shiny::showNotification(paste0("Snapshot refresh failed: ", conditionMessage(fresh)), type = "error", duration = 8)
       return()
     }
-    if (is.null(snapshot_id())) snapshot_id(paste0("snapshot-", config$identity$config_id))
-    next_version <- as.integer(snapshot_version() %||% 0L) + 1L
+    next_version <- tryCatch(
+      curation_snapshot_version(fresh, scope, config = config),
+      error = function(e) e
+    )
+    if (inherits(next_version, "error")) {
+      shiny::showNotification(
+        paste0("Snapshot refresh failed: ", conditionMessage(next_version)),
+        type = "error", duration = 8
+      )
+      return()
+    }
+    if (identical(snapshot_version(), next_version)) {
+      records(fresh)
+      shiny::showNotification("The current snapshot is already persisted.", type = "message")
+      return()
+    }
+    # Another session may already have published this exact immutable version
+    # while this session was open.  Reuse it instead of trying to overwrite an
+    # existing artifact path.
+    existing <- curation_app_read_snapshot(
+      artifact_store, scope, mutation_actor, version = next_version
+    )
+    if (!is.null(existing$records)) {
+      records(fresh)
+      snapshot_id(existing$id)
+      snapshot_version(existing$version)
+      snapshot_revision(existing$revision)
+      shiny::showNotification("Snapshot refreshed from the persisted artifact.", type = "message")
+      return()
+    }
     written <- tryCatch(
       curation_artifact_write_snapshot(
         artifact_store,
         scope,
-        snapshot = list(
-          snapshot_id = snapshot_id(),
-          version = next_version,
-          records = fresh,
-          created_at = Sys.time()
-        ),
-        actor = actor,
-        expected_revision = snapshot_revision()
+        snapshot = fresh,
+        actor = mutation_actor,
+        expected_revision = 0L
       ),
       error = function(e) e
     )
@@ -981,7 +1642,8 @@ curation_app_server <- function(input, output, session, context) {
       return()
     }
     records(fresh)
-    snapshot_version(next_version)
+    snapshot_id(written$snapshot_id %||% snapshot_id())
+    snapshot_version(written$version %||% next_version)
     if (!is.null(written$revision)) snapshot_revision(as.integer(written$revision))
     shiny::showNotification("Snapshot refreshed through the injected artifact store.", type = "message")
   })
@@ -1052,6 +1714,28 @@ curation_app_server <- function(input, output, session, context) {
   active_reviews <- shiny::reactive({
     curation_app_active_reviews(reviews())
   })
+  initial_admin <- curation_app_is_admin(actor)
+  output$admin_review_ui <- shiny::renderUI({
+    if (!isTRUE(initial_admin)) {
+      return(NULL)
+    }
+    bslib <- asNamespace("bslib")
+    bslib$card(
+      bslib$card_header("Admin review management"),
+      shiny::helpText(
+        "Administrators can edit an existing review for any target reviewer. The authenticated administrator remains the actor; the target reviewer is shown per row."
+      ),
+      reactable::reactableOutput("admin_review_tbl", height = "420px"),
+      max_height = "560px",
+      class = "curation-admin-card"
+    )
+  })
+  output$admin_review_tbl <- reactable::renderReactable({
+    if (!isTRUE(initial_admin)) {
+      return(reactable::reactable(data.frame(Note = "Administrator access is required."), pagination = FALSE))
+    }
+    curation_app_admin_table(reviews())
+  })
   current_reviewed_keys <- shiny::reactive({
     rv <- active_reviews()
     rv <- rv[rv$reviewer_id == reviewer_id, , drop = FALSE]
@@ -1096,12 +1780,53 @@ curation_app_server <- function(input, output, session, context) {
   })
 
   shiny::observeEvent(input$train_model, {
+    trigger <- input$train_model
+    if (is.null(trigger) || !is.numeric(trigger) || length(trigger) != 1L || is.na(trigger) || trigger <= 0) {
+      return()
+    }
+    training_actor <- tryCatch(current_actor(), error = function(e) e)
+    if (inherits(training_actor, "error")) {
+      shiny::showNotification(
+        paste0("Training failed: ", conditionMessage(training_actor)),
+        type = "error", duration = 8
+      )
+      return()
+    }
+    model_threshold <- as.numeric(input$model_threshold %||% 0.5)
+    active_before <- tryCatch(
+      curation_artifact_active_model(artifact_store, scope, training_actor),
+      error = function(e) NULL
+    )
+    expected_active_revision <- if (is.null(active_before)) {
+      0L
+    } else {
+      as.integer(active_before$active_revision %||% active_before$revision %||% 0L)
+    }
+    provenance <- tryCatch(
+      curation_app_model_provenance(
+        scope = scope,
+        config = config,
+        records = records(),
+        reviews = reviews(),
+        actor = training_actor,
+        snapshot_version = snapshot_version(),
+        learner_key = input$learner %||% "logistic",
+        eval_source = "random",
+        threshold = model_threshold
+      ),
+      error = function(e) e
+    )
+    if (inherits(provenance, "error")) {
+      shiny::showNotification(paste0("Training failed: ", conditionMessage(provenance)), type = "error", duration = 8)
+      return()
+    }
     fitted <- tryCatch(
       shiny::withProgress(message = "Training selection model (cross-validating)...", value = 0.5, {
         curation_train_model(
           records(), reviews(), config,
           learner_key = input$learner %||% "logistic",
-          eval_source = "random"
+          eval_source = "random",
+          threshold = model_threshold
         )
       }),
       error = function(e) e
@@ -1110,33 +1835,42 @@ curation_app_server <- function(input, output, session, context) {
       shiny::showNotification(paste0("Training failed: ", conditionMessage(fitted)), type = "error", duration = 8)
       return()
     }
-    model(fitted)
+    publication_actor <- tryCatch(current_actor(), error = function(e) e)
+    if (inherits(publication_actor, "error")) {
+      shiny::showNotification(
+        paste0("Model publication failed: ", conditionMessage(publication_actor)),
+        type = "warning", duration = 8
+      )
+      return()
+    }
     # Model publication is the only artifact write here.  The app never writes
     # an RDS path or a session-wide review frame.
-    tryCatch(
+    published <- tryCatch(
       {
-        listed <- curation_artifact_list_models(artifact_store, scope, actor)
-        expected_model_revision <- if (is.data.frame(listed) && nrow(listed) > 0L && "revision" %in% names(listed)) max(as.integer(listed$revision)) else 0L
-        active <- curation_artifact_active_model(artifact_store, scope, actor)
-        expected_active_revision <- if (is.null(active)) 0L else as.integer(active$active_revision %||% active$revision %||% 0L)
         curation_publish_model(
           artifact_store, scope, fitted,
-          provenance = list(
-            reviewer_id = reviewer_id,
-            eval_source = "random",
-            config_id = config$identity$config_id,
-            trained_at = Sys.time()
-          ),
-          actor = actor,
-          expected_revision = expected_model_revision,
+          provenance = provenance,
+          # Every model version is immutable.  A non-zero model-list revision
+          # is not a valid CAS value for a newly-created version.
+          expected_revision = 0L,
           expected_active_revision = expected_active_revision,
-          config = config
+          config = config,
+          actor = publication_actor
         )
       },
-      error = function(e) {
-        shiny::showNotification(paste0("Model trained but could not be published: ", conditionMessage(e)), type = "warning", duration = 8)
-      }
+      error = identity
     )
+    if (inherits(published, "error")) {
+      # Keep displaying the previously active model.  A trained object is not
+      # part of the session state until its immutable write and active CAS
+      # publication both succeed.
+      shiny::showNotification(
+        paste0("Model trained but could not be published: ", conditionMessage(published)),
+        type = "warning", duration = 8
+      )
+      return()
+    }
+    model(fitted)
     shiny::showNotification("Selection model trained.", type = "message")
   })
   shiny::observeEvent(input$compute_lc, {
@@ -1236,10 +1970,23 @@ curation_app_server <- function(input, output, session, context) {
     if (is.null(total)) sprintf("%d rows", nrow(data)) else sprintf("showing %d of %d (capped)", nrow(data), total)
   })
   output$review_tbl <- reactable::renderReactable({
-    curation_app_table(display_capped(), reviews(), config, source = "browse", reviewer_id = reviewer_id)
+    data <- display_capped()
+    display_rows <- curation_app_review_display_rows(data, reviews(), reviewer_id)
+    render_id <- curation_artifact_content_fingerprint(display_rows)
+    review_display_tokens$review_tbl <- render_id
+    session$sendCustomMessage(
+      "curationReviewDisplayed",
+      list(
+        table_id = "review_tbl",
+        render_id = render_id,
+        rows = display_rows
+      )
+    )
+    curation_app_table(data, reviews(), config, source = "browse", reviewer_id = reviewer_id, render_id = render_id)
   })
 
-  write_one <- function(country, document_id, decision, source) {
+  write_one <- function(country, document_id, decision, source, expected_revision = NULL) {
+    write_actor <- current_actor()
     available <- records()
     valid_record <- nrow(available) > 0L && any(
       as.character(available$country) == as.character(country) &
@@ -1251,10 +1998,16 @@ curation_app_server <- function(input, output, session, context) {
         class = "planscanR_error_curation_repository"
       )
     }
-    expected <- curation_app_current_revision(reviews(), country, document_id, reviewer_id)
+    if (is.null(expected_revision) || length(expected_revision) == 0L) {
+      curation_abort(
+        "The review event did not include the displayed revision.",
+        class = "planscanR_error_curation_conflict"
+      )
+    }
+    expected <- curation_app_validate_displayed_revision(expected_revision)
     key <- curation_review_key(country, document_id, reviewer_id)
     if (is.null(decision)) {
-      result <- curation_review_clear(repository, scope, key, actor, expected)
+      result <- curation_review_clear(repository, scope, key, write_actor, expected)
       decision_row <- NULL
     } else {
       decision_row <- data.frame(
@@ -1263,54 +2016,265 @@ curation_app_server <- function(input, output, session, context) {
         reviewed_at = as.POSIXct(Sys.time(), tz = "UTC"), sidecar_path = NA_character_,
         stringsAsFactors = FALSE
       )
-      result <- curation_review_upsert(repository, scope, decision_row, actor, expected)
+      result <- curation_review_upsert(repository, scope, decision_row, write_actor, expected)
     }
-    reviews(curation_app_replace_review_result(reviews(), decision_row, result, actor))
+    reviews(curation_app_replace_review_result(reviews(), decision_row, result, write_actor))
+    canonical <- curation_app_canonical_review_update(reviews(), key)
+    try(
+      session$sendCustomMessage("curationReviewRefresh", list(updates = list(canonical))),
+      silent = TRUE
+    )
     result
   }
-  safe_write_one <- function(country, document_id, decision, source) {
+  refresh_conflict <- function(error, country = NULL, document_id = NULL) {
+    if (!inherits(error, "planscanR_error_curation_conflict")) {
+      return(invisible(FALSE))
+    }
+    key <- error$key
+    if (!is.list(key) || is.null(key$country) || is.null(key$document_id)) {
+      if (is.null(country) || is.null(document_id)) {
+        return(invisible(FALSE))
+      }
+      key <- curation_review_key(country, document_id, reviewer_id)
+    }
+    refreshed <- tryCatch({
+      refresh_actor <- current_actor()
+      curation_app_refresh_review(reviews(), repository, scope, key, refresh_actor)
+    }, error = function(refresh_error) refresh_error)
+    if (inherits(refreshed, "error")) {
+      shiny::showNotification(
+        paste0("The review changed in another session and could not be refreshed: ", conditionMessage(refreshed)),
+        type = "warning", duration = 8
+      )
+      return(invisible(FALSE))
+    }
+    reviews(refreshed)
+    canonical <- curation_app_canonical_review_update(refreshed, key)
+    try(
+      session$sendCustomMessage("curationReviewRefresh", list(updates = list(canonical))),
+      silent = TRUE
+    )
+    shiny::showNotification(
+      "This review changed in another session; the current decision was reloaded. Save again if needed.",
+      type = "warning", duration = 8
+    )
+    invisible(TRUE)
+  }
+  safe_write_one <- function(country, document_id, decision, source, expected_revision = NULL) {
+    key <- curation_app_key_string(country, document_id, reviewer_id)
+    pending_before <- pending_review_keys()
+    pending_review_keys(unique(c(pending_before, key)))
+    on.exit(pending_review_keys(pending_before), add = TRUE)
     tryCatch(
-      write_one(country, document_id, decision, source),
+      write_one(country, document_id, decision, source, expected_revision = expected_revision),
       error = function(e) {
+        refresh_conflict(e, country, document_id)
         shiny::showNotification(paste0("Review write failed: ", conditionMessage(e)), type = "error", duration = 8)
         NULL
       }
     )
   }
+  shiny::observeEvent(input$admin_row_decision,
+    {
+      info <- input$admin_row_decision
+      required <- c("country", "document_id", "reviewer", "decision", "revision")
+      if (!is.list(info) || any(vapply(required, function(name) is.null(info[[name]]) || length(info[[name]]) == 0L, logical(1)))) {
+        shiny::showNotification(
+          "Administrator write stopped because the target row or displayed revision was missing.",
+          type = "warning", duration = 8
+        )
+        return()
+      }
+      admin_actor <- tryCatch(current_actor(), error = function(error) error)
+      if (inherits(admin_actor, "error")) {
+        shiny::showNotification(paste0("Administrator write failed: ", conditionMessage(admin_actor)), type = "error", duration = 8)
+        return()
+      }
+      if (!curation_app_is_admin(admin_actor)) {
+        shiny::showNotification("Administrator access is required to edit another reviewer's row.", type = "warning", duration = 8)
+        return()
+      }
+      displayed_revision <- tryCatch(
+        curation_app_validate_displayed_revision(info$revision),
+        error = function(error) error
+      )
+      if (inherits(displayed_revision, "error")) {
+        shiny::showNotification("Administrator write stopped because the displayed revision was invalid.", type = "warning", duration = 8)
+        return()
+      }
+      country <- as.character(info$country[[1L]])
+      document_id <- as.character(info$document_id[[1L]])
+      target_reviewer <- as.character(info$reviewer[[1L]])
+      decision <- as.character(info$decision[[1L]])
+      if (!decision %in% c("keep", "drop", "unsure")) {
+        shiny::showNotification("Administrator write stopped because the decision was invalid.", type = "warning", duration = 8)
+        return()
+      }
+      key <- curation_review_key(country, document_id, target_reviewer)
+      current <- tryCatch(curation_review_read(repository, scope, key, admin_actor), error = function(error) error)
+      if (inherits(current, "error")) {
+        shiny::showNotification(paste0("Administrator write failed: ", conditionMessage(current)), type = "error", duration = 8)
+        return()
+      }
+      if (is.null(current) || nrow(current) == 0L || isTRUE(as.logical(current$deleted[[1L]])) || is.na(current$decision[[1L]]) || !nzchar(current$decision[[1L]])) {
+        shiny::showNotification("Administrator write stopped because the target review no longer exists.", type = "warning", duration = 8)
+        return()
+      }
+      pending_before <- pending_review_keys()
+      pending_key <- curation_app_key_string(country, document_id, target_reviewer)
+      pending_review_keys(unique(c(pending_before, pending_key)))
+      on.exit(pending_review_keys(pending_before), add = TRUE)
+      decision_row <- data.frame(
+        country = country,
+        document_id = document_id,
+        reviewer_id = target_reviewer,
+        decision = decision,
+        source = as.character(current$source[[1L]]),
+        note = current$note[[1L]],
+        reviewed_at = as.POSIXct(Sys.time(), tz = "UTC"),
+        sidecar_path = current$sidecar_path[[1L]],
+        stringsAsFactors = FALSE
+      )
+      result <- tryCatch(
+        curation_review_upsert(repository, scope, decision_row, admin_actor, displayed_revision),
+        error = function(error) error
+      )
+      if (inherits(result, "error")) {
+        refresh_conflict(result, country, document_id)
+        shiny::showNotification(paste0("Administrator write failed: ", conditionMessage(result)), type = "error", duration = 8)
+        return()
+      }
+      reviews(curation_app_replace_review_result(reviews(), decision_row, result, admin_actor))
+      canonical <- curation_app_canonical_review_update(reviews(), key)
+      try(
+        session$sendCustomMessage("curationReviewRefresh", list(updates = list(canonical))),
+        silent = TRUE
+      )
+      shiny::showNotification(
+        sprintf("Updated %s/%s for reviewer %s.", country, document_id, target_reviewer),
+        type = "message", duration = 6
+      )
+    },
+    ignoreInit = TRUE
+  )
   shiny::observeEvent(input$row_decision,
     {
       info <- input$row_decision
       if (is.null(info) || is.null(info$id) || is.null(info$country)) {
         return()
       }
+      if (is.null(info$revision) || length(info$revision) == 0L) {
+        shiny::showNotification(
+          "Review write stopped because the displayed revision was missing; refresh and try again.",
+          type = "warning", duration = 8
+        )
+        return()
+      }
       decision <- if (is.null(info$decision)) NULL else as.character(info$decision)
       source <- if (is.null(info$source)) "browse" else as.character(info$source)
-      safe_write_one(info$country, info$id, decision, source)
+      displayed_revision <- curation_app_validate_displayed_revision(info$revision)
+      safe_write_one(info$country, info$id, decision, source, expected_revision = displayed_revision)
     },
     ignoreInit = TRUE
   )
 
   apply_bulk <- function(decision, output_id, data, source) {
-    index <- tryCatch(reactable::getReactableState(output_id, "selected"), error = function(e) integer(0))
-    index <- as.integer(index)
-    index <- index[is.finite(index) & index >= 1L & index <= nrow(data)]
-    if (length(index) == 0L) {
+    displayed <- input$review_bulk_display
+    if (!is.list(displayed) || is.null(displayed$table_id) ||
+        !identical(as.character(displayed$table_id), output_id) ||
+        is.null(displayed$render_id) || length(displayed$render_id) != 1L ||
+        !identical(as.character(displayed$render_id), review_display_tokens[[output_id]])) {
+      shiny::showNotification(
+        "Bulk action stopped because the selected rows are no longer from the displayed table; refresh and try again.",
+        type = "warning"
+      )
+      return(invisible(NULL))
+    }
+    displayed_rows <- displayed$rows %||% list()
+    if (!is.list(displayed_rows) || length(displayed_rows) == 0L) {
       shiny::showNotification("No rows ticked.", type = "warning")
       return(invisible(NULL))
     }
+    displayed_revisions <- list()
+    displayed_keys <- character(0)
+    for (entry in displayed_rows) {
+      if (!is.list(entry) || is.null(entry$country) || is.null(entry$document_id) || is.null(entry$revision)) {
+        shiny::showNotification(
+          "Bulk action stopped because a selected row has no displayed revision; refresh the table and try again.",
+          type = "warning"
+        )
+        return(invisible(NULL))
+      }
+      revision <- tryCatch(
+        curation_app_validate_displayed_revision(entry$revision),
+        error = function(error) NA_integer_
+      )
+      if (length(revision) != 1L || is.na(revision)) {
+        shiny::showNotification(
+          "Bulk action stopped because a selected row has no valid displayed revision; refresh the table and try again.",
+          type = "warning"
+        )
+        return(invisible(NULL))
+      }
+      key <- curation_app_key_string(entry$country, entry$document_id, reviewer_id)
+      if (key %in% displayed_keys) {
+        shiny::showNotification("Bulk action stopped because the rendered selection contains a duplicate row.", type = "warning")
+        return(invisible(NULL))
+      }
+      displayed_keys <- c(displayed_keys, key)
+      displayed_revisions[[key]] <- revision
+    }
+    current_keys <- curation_app_key_string(data$country, data$document_id, reviewer_id)
+    index <- match(displayed_keys, current_keys)
+    if (anyNA(index)) {
+      shiny::showNotification(
+        "Bulk action stopped because a rendered row is no longer in the current table; refresh and try again.",
+        type = "warning"
+      )
+      return(invisible(NULL))
+    }
     selected <- data[index, c("country", "document_id"), drop = FALSE]
+    expected <- vapply(
+      displayed_keys,
+      function(key) as.integer(displayed_revisions[[key]]),
+      integer(1)
+    )
+    if (anyNA(expected)) {
+      shiny::showNotification(
+        "Bulk action stopped because a selected row has no displayed revision; refresh the table and try again.",
+        type = "warning"
+      )
+      return(invisible(NULL))
+    }
+    selected_keys <- curation_app_key_string(
+      selected$country, selected$document_id, reviewer_id
+    )
+    if (!identical(selected_keys, displayed_keys)) {
+      shiny::showNotification(
+        "Bulk action stopped because the rendered rows changed before the action was submitted; refresh and try again.",
+        type = "warning"
+      )
+      return(invisible(NULL))
+    }
+    pending_before <- pending_review_keys()
+    pending_review_keys(unique(c(pending_before, selected_keys)))
+    on.exit(pending_review_keys(pending_before), add = TRUE)
     if (is.null(decision)) {
       result <- tryCatch(
         {
           out <- vector("list", nrow(selected))
           for (i in seq_len(nrow(selected))) {
-            out[[i]] <- write_one(selected$country[[i]], selected$document_id[[i]], NULL, source)
+            out[[i]] <- write_one(
+              selected$country[[i]], selected$document_id[[i]], NULL, source,
+              expected_revision = expected[[i]]
+            )
           }
           out
         },
         error = function(e) e
       )
       if (inherits(result, "error")) {
+        refresh_conflict(result)
         shiny::showNotification(paste0("Bulk clear failed: ", conditionMessage(result)), type = "error", duration = 8)
         return(invisible(NULL))
       }
@@ -1322,9 +2286,14 @@ curation_app_server <- function(input, output, session, context) {
         note = NA_character_, reviewed_at = rep(as.POSIXct(Sys.time(), tz = "UTC"), nrow(selected)),
         sidecar_path = NA_character_, stringsAsFactors = FALSE
       )
-      expected <- vapply(seq_len(nrow(decisions)), function(i) curation_app_current_revision(reviews(), decisions$country[[i]], decisions$document_id[[i]], reviewer_id), integer(1))
-      result <- tryCatch(curation_review_bulk_upsert(repository, scope, decisions, actor, expected), error = function(e) e)
+      write_actor <- tryCatch(current_actor(), error = function(e) e)
+      if (inherits(write_actor, "error")) {
+        shiny::showNotification(paste0("Bulk write failed: ", conditionMessage(write_actor)), type = "error", duration = 8)
+        return(invisible(NULL))
+      }
+      result <- tryCatch(curation_review_bulk_upsert(repository, scope, decisions, write_actor, expected), error = function(e) e)
       if (inherits(result, "error")) {
+        refresh_conflict(result)
         shiny::showNotification(paste0("Bulk write failed: ", conditionMessage(result)), type = "error", duration = 8)
         return(invisible(NULL))
       }
@@ -1334,11 +2303,21 @@ curation_app_server <- function(input, output, session, context) {
           key = curation_review_key(decisions$country[[i]], decisions$document_id[[i]], reviewer_id),
           revision = result_rows$revision[[i]], deleted = result_rows$deleted[[i]]
         )
-        reviews(curation_app_replace_review_result(reviews(), decisions[i, , drop = FALSE], one_result, actor))
+        reviews(curation_app_replace_review_result(reviews(), decisions[i, , drop = FALSE], one_result, write_actor))
       }
       keys <- curation_app_key_string(decisions$country, decisions$document_id, reviewer_id)
     }
-    session$sendCustomMessage("curationBulkDecision", list(keys = as.list(keys), decision = decision))
+    updates <- lapply(seq_len(nrow(selected)), function(i) {
+      canonical <- curation_app_canonical_review_update(
+        reviews(),
+        curation_review_key(selected$country[[i]], selected$document_id[[i]], reviewer_id)
+      )
+      canonical
+    })
+    session$sendCustomMessage(
+      "curationBulkDecision",
+      list(keys = as.list(keys), decision = decision, updates = updates)
+    )
     try(reactable::updateReactable(output_id, selected = NA), silent = TRUE)
     shiny::showNotification(sprintf("%d record(s) updated.", length(index)), type = "message")
     invisible(NULL)
@@ -1397,7 +2376,19 @@ curation_app_server <- function(input, output, session, context) {
   })
 
   output$random_tbl <- reactable::renderReactable({
-    curation_app_table(random_df(), reviews(), config, source = "random", blind = isTRUE(input$rnd_blind), reviewer_id = reviewer_id)
+    data <- random_df()
+    display_rows <- curation_app_review_display_rows(data, reviews(), reviewer_id)
+    render_id <- curation_artifact_content_fingerprint(display_rows)
+    review_display_tokens$random_tbl <- render_id
+    session$sendCustomMessage(
+      "curationReviewDisplayed",
+      list(
+        table_id = "random_tbl",
+        render_id = render_id,
+        rows = display_rows
+      )
+    )
+    curation_app_table(data, reviews(), config, source = "random", blind = isTRUE(input$rnd_blind), reviewer_id = reviewer_id, render_id = render_id)
   })
   output$warm_status <- shiny::renderUI({
     if (is.null(config$translator)) shiny::helpText("Translation provider disabled.") else shiny::helpText("Translations are supplied by the injected provider.")
@@ -1414,6 +2405,14 @@ curation_app_server <- function(input, output, session, context) {
   })
 
   shiny::observeEvent(input$rnd_draw, {
+    sample_actor <- tryCatch(current_actor(), error = function(e) e)
+    if (inherits(sample_actor, "error")) {
+      shiny::showNotification(
+        paste0("Queue build failed: ", conditionMessage(sample_actor)),
+        type = "error", duration = 8
+      )
+      return()
+    }
     countries_now <- selected_countries()
     queue <- tryCatch(
       curation_build_review_queue(
@@ -1427,25 +2426,39 @@ curation_app_server <- function(input, output, session, context) {
       shiny::showNotification(paste0("Queue build failed: ", conditionMessage(queue)), type = "error", duration = 8)
       return()
     }
-    if (is.null(sample_id())) sample_id(paste0("sample-", gsub("[^A-Za-z0-9_.-]", "-", reviewer_id)))
-    expected <- sample_revision()
-    sample(queue)
-    sample_index(1L)
+    # Each draw is a new immutable artifact.  Reusing the previous reviewer
+    # sample ID would turn an ordinary queue rebuild into an overwrite attempt
+    # and would make restart recovery select the wrong queue.
+    new_sample_id <- curation_app_new_sample_id(
+      scope, reviewer_id, queue, seed = input$rnd_seed
+    )
+    sample_payload <- list(
+      sample_id = new_sample_id,
+      reviewer_id = reviewer_id,
+      queue = queue,
+      mode = attr(queue, "mode") %||% "empty",
+      seed = input$rnd_seed,
+      created_at = Sys.time()
+    )
+    attr(sample_payload, "curation_sample_metadata") <- list(sample_id = new_sample_id)
     written <- tryCatch(
       curation_artifact_write_sample(
         artifact_store, scope,
-        sample = list(sample_id = sample_id(), reviewer_id = reviewer_id, queue = queue, mode = attr(queue, "mode") %||% "empty", seed = input$rnd_seed),
-        reviewer_id = reviewer_id, actor = actor, expected_revision = expected
+        sample = sample_payload,
+        reviewer_id = reviewer_id, actor = sample_actor, expected_revision = 0L
       ),
       error = function(e) e
     )
     if (inherits(written, "error") || (is.list(written) && "ok" %in% names(written) && isFALSE(written$ok))) {
       message <- if (inherits(written, "error")) conditionMessage(written) else "the artifact store rejected the write"
       shiny::showNotification(paste0("Queue built but sample artifact was not saved: ", message), type = "warning", duration = 8)
-    } else if (!is.null(written$revision)) {
-      sample_revision(as.integer(written$revision))
+    } else {
+      sample(sample_payload$queue)
+      sample_id(written$sample_id %||% new_sample_id)
+      sample_index(1L)
+      if (!is.null(written$revision)) sample_revision(as.integer(written$revision))
+      shiny::showNotification(sprintf("Queued %d records (%s).", nrow(queue), attr(queue, "mode") %||% "empty"), type = "message")
     }
-    shiny::showNotification(sprintf("Queued %d records (%s).", nrow(queue), attr(queue, "mode") %||% "empty"), type = "message")
   })
   shiny::observeEvent(input$rnd_keep, apply_bulk("keep", "random_tbl", random_df(), "random"))
   shiny::observeEvent(input$rnd_drop, apply_bulk("drop", "random_tbl", random_df(), "random"))
@@ -1467,12 +2480,51 @@ curation_app_server <- function(input, output, session, context) {
     hit <- rv$country == row$country[[1L]] & rv$document_id == row$document_id[[1L]] & rv$reviewer_id == reviewer_id
     if (!any(hit)) NA_character_ else as.character(rv$decision[which(hit)[1L]])
   }
-  sr_set <- function(decision) {
+  sr_set <- function(info) {
+    if (!is.list(info) || is.null(info$decision) || is.null(info$country) ||
+        is.null(info$document_id) || is.null(info$reviewer) || is.null(info$revision)) {
+      shiny::showNotification(
+        "Stepper write stopped because the displayed row and revision were not captured.",
+        type = "warning", duration = 8
+      )
+      return(invisible(NULL))
+    }
+    decision <- as.character(info$decision[[1L]])
+    if (!decision %in% c("keep", "drop", "unsure")) {
+      shiny::showNotification("Stepper write stopped because the decision was invalid.", type = "warning", duration = 8)
+      return(invisible(NULL))
+    }
+    if (!identical(as.character(info$reviewer[[1L]]), as.character(reviewer_id))) {
+      shiny::showNotification("Stepper write stopped because the displayed reviewer changed.", type = "warning", duration = 8)
+      return(invisible(NULL))
+    }
     row <- sr_current()
     if (is.null(row)) {
       return(invisible(NULL))
     }
-    result <- safe_write_one(row$country[[1L]], row$document_id[[1L]], decision, "random")
+    if (!identical(as.character(info$country[[1L]]), as.character(row$country[[1L]])) ||
+        !identical(as.character(info$document_id[[1L]]), as.character(row$document_id[[1L]]))) {
+      shiny::showNotification(
+        "Stepper write stopped because the displayed row changed; review the current row and try again.",
+        type = "warning", duration = 8
+      )
+      return(invisible(NULL))
+    }
+    displayed_revision <- tryCatch(
+      curation_app_validate_displayed_revision(info$revision),
+      error = function(error) error
+    )
+    if (inherits(displayed_revision, "error")) {
+      shiny::showNotification(
+        "Stepper write stopped because the displayed revision was invalid; review the current row and try again.",
+        type = "warning", duration = 8
+      )
+      return(invisible(NULL))
+    }
+    result <- safe_write_one(
+      info$country[[1L]], info$document_id[[1L]], decision, "random",
+      expected_revision = displayed_revision
+    )
     if (is.null(result)) {
       return(invisible(NULL))
     }
@@ -1485,9 +2537,7 @@ curation_app_server <- function(input, output, session, context) {
     if (length(next_index)) sample_index(next_index[[1L]]) else if (any(!done)) sample_index(which(!done)[[1L]])
     invisible(result)
   }
-  shiny::observeEvent(input$sr_keep, sr_set("keep"))
-  shiny::observeEvent(input$sr_drop, sr_set("drop"))
-  shiny::observeEvent(input$sr_unsure, sr_set("unsure"))
+  shiny::observeEvent(input$sr_decision, sr_set(input$sr_decision), ignoreInit = TRUE)
   shiny::observeEvent(input$sr_next, {
     data <- random_df()
     if (nrow(data) == 0L) {
@@ -1543,7 +2593,30 @@ curation_app_server <- function(input, output, session, context) {
       return(NULL)
     }
     current <- sr_decision(row)
+    displayed_revision <- curation_app_current_revision(
+      reviews(), row$country[[1L]], row$document_id[[1L]], reviewer_id
+    )
     shiny::tagList(
+      shiny::tags$input(
+        id = "sr_displayed_country",
+        type = "hidden",
+        value = as.character(row$country[[1L]])
+      ),
+      shiny::tags$input(
+        id = "sr_displayed_document_id",
+        type = "hidden",
+        value = as.character(row$document_id[[1L]])
+      ),
+      shiny::tags$input(
+        id = "sr_displayed_reviewer",
+        type = "hidden",
+        value = as.character(reviewer_id)
+      ),
+      shiny::tags$input(
+        id = "sr_displayed_revision",
+        type = "hidden",
+        value = as.character(displayed_revision)
+      ),
       shiny::actionButton("sr_keep", "Keep", class = paste("btn-lg btn-success", if (identical(current, "keep")) "active" else "")),
       shiny::actionButton("sr_drop", "Drop", class = paste("btn-lg btn-danger", if (identical(current, "drop")) "active" else "")),
       shiny::actionButton("sr_unsure", "Unsure", class = paste("btn-lg btn-warning", if (identical(current, "unsure")) "active" else ""))
@@ -1564,8 +2637,10 @@ curation_app_server <- function(input, output, session, context) {
 #' Create a configurable curation Shiny application.
 #'
 #' All corpus, review, artifact, identity, and translation boundaries are
-#' supplied by the caller.  The app resolves its trusted actor once per
-#' session; display names are informational and cannot select a reviewer.
+#' supplied by the caller.  The app resolves its trusted actor at session start,
+#' rechecks it before mutations, and uses an optional non-touching probe to
+#' close an expired socket; display names are informational and cannot select
+#' a reviewer.
 #'
 #' @param config A `planscanR_curation_config`.
 #' @param records_provider A `planscanR_curation_records_provider`.
@@ -1575,6 +2650,10 @@ curation_app_server <- function(input, output, session, context) {
 #' @param actor_resolver A trusted `planscanR_curation_actor_resolver`.
 #' @param request Optional deployment request value or function accepting
 #'   `session`; it is passed to the actor resolver.
+#' @param actor_probe Optional non-touching actor resolver used by the periodic
+#'   socket-expiry check. Mutation paths always use `actor_resolver`.
+#' @param logout_path Optional local POST path rendered as a visible Log out
+#'   control, for example `/app/logout`. It is absent by default.
 #' @return A `shiny.appobj`.
 #' @export
 curation_app <- function(
@@ -1583,7 +2662,9 @@ curation_app <- function(
   review_repository,
   artifact_store,
   actor_resolver,
-  request = NULL
+  request = NULL,
+  actor_probe = NULL,
+  logout_path = NULL
 ) {
   curation_app_require_ui()
   curation_check_config(config)
@@ -1591,16 +2672,20 @@ curation_app <- function(
   curation_check_review_repository(review_repository)
   curation_check_artifact_store(artifact_store)
   curation_app_check_actor_resolver(actor_resolver)
+  if (!is.null(actor_probe)) curation_app_check_actor_resolver(actor_probe)
+  logout_path <- curation_app_validate_logout_path(logout_path)
   context <- list(
     config = config,
     records_provider = records_provider,
     review_repository = review_repository,
     artifact_store = artifact_store,
     actor_resolver = actor_resolver,
+    actor_probe = actor_probe,
+    logout_path = logout_path,
     request = request
   )
   shiny::shinyApp(
-    ui = curation_app_ui(config),
+    ui = curation_app_ui(config, logout_path = logout_path),
     server = function(input, output, session) curation_app_server(input, output, session, context)
   )
 }
@@ -1621,6 +2706,8 @@ run_curation <- function(
   actor_resolver,
   request = NULL,
   launch.browser = interactive(),
+  actor_probe = NULL,
+  logout_path = NULL,
   ...
 ) {
   app <- curation_app(
@@ -1629,6 +2716,8 @@ run_curation <- function(
     review_repository = review_repository,
     artifact_store = artifact_store,
     actor_resolver = actor_resolver,
+    actor_probe = actor_probe,
+    logout_path = logout_path,
     request = request
   )
   shiny::runApp(app, launch.browser = launch.browser, ...)
