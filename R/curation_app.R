@@ -1210,6 +1210,44 @@ curation_app_snapshot_config_matches <- function(snapshot_info, config) {
   identical(as.character(metadata$config_fingerprint), as.character(expected))
 }
 
+curation_app_snapshot_compatible <- function(snapshot_info, scope, config) {
+  if (!is.list(snapshot_info) || !is.data.frame(snapshot_info$records)) {
+    return(FALSE)
+  }
+  metadata <- snapshot_info$metadata
+  if (!is.list(metadata)) {
+    return(FALSE)
+  }
+  schema_version <- metadata$schema_version
+  if (!is.character(schema_version) || length(schema_version) != 1L ||
+    is.na(schema_version) || !identical(schema_version, "curation-snapshot.v1")) {
+    return(FALSE)
+  }
+  if (!is.character(metadata$enrichment_schema) ||
+    length(metadata$enrichment_schema) != 1L ||
+    is.na(metadata$enrichment_schema) ||
+    !identical(metadata$enrichment_schema, curation_artifact_enrichment_schema)) {
+    return(FALSE)
+  }
+  valid_records <- tryCatch(
+    {
+      curation_validate_record_frame(snapshot_info$records)
+      TRUE
+    },
+    error = function(error) FALSE
+  )
+  if (!isTRUE(valid_records) || !curation_app_snapshot_config_matches(snapshot_info, config)) {
+    return(FALSE)
+  }
+  expected <- tryCatch(
+    curation_snapshot_version(snapshot_info$records, scope, config = config),
+    error = function(error) NULL
+  )
+  is.character(snapshot_info$version) && length(snapshot_info$version) == 1L &&
+    !is.na(snapshot_info$version) && !is.null(expected) &&
+    identical(as.character(snapshot_info$version), as.character(expected))
+}
+
 curation_app_model_provenance <- function(
   scope,
   config,
@@ -1410,58 +1448,77 @@ curation_app_server <- function(input, output, session, context) {
     }, ignoreInit = TRUE)
   }
 
+  app_state <- context$app_state
+  if (!is.environment(app_state)) {
+    app_state <- new.env(parent = emptyenv())
+  }
   read_records <- function(refresh = FALSE) {
     curation_records_snapshot(provider, config, refresh = refresh)
   }
-  snapshot_info <- curation_app_read_snapshot(artifact_store, scope, actor)
-  # A persisted artifact is a restart optimization, not an authority about
-  # the current corpus or configuration.  Read the current provider once and
-  # compare its content-derived version before reusing the cached payload.  If
-  # the provider is temporarily unavailable, the last valid artifact remains a
-  # useful restart fallback.
-  live_records <- tryCatch(read_records(FALSE), error = identity)
-  if (inherits(live_records, "error")) {
-    if (is.null(snapshot_info$records)) {
+  snapshot_info <- if (exists("snapshot", envir = app_state, inherits = FALSE)) {
+    app_state$snapshot
+  } else {
+    curation_app_read_snapshot(artifact_store, scope, actor)
+  }
+  if (curation_app_snapshot_compatible(snapshot_info, scope, config)) {
+    initial_records <- snapshot_info$records
+    app_state$snapshot <- snapshot_info
+  } else {
+    if (exists("snapshot", envir = app_state, inherits = FALSE)) {
+      rm("snapshot", envir = app_state)
+    }
+    live_records <- tryCatch(read_records(FALSE), error = identity)
+    if (inherits(live_records, "error")) {
       shiny::showNotification(
         paste0("Unable to load records: ", conditionMessage(live_records)),
         type = "error", duration = 8
       )
       initial_records <- curation_app_empty_records()
-    } else if (!curation_app_snapshot_config_matches(snapshot_info, config)) {
-      shiny::showNotification(
-        paste0(
-          "Current records are unavailable and the persisted snapshot does not match the active configuration: ",
-          conditionMessage(live_records)
-        ),
-        type = "error", duration = 10
-      )
-      initial_records <- curation_app_empty_records()
       snapshot_info <- list(records = NULL, id = NULL, version = NULL, revision = 0L, metadata = list())
     } else {
-      shiny::showNotification(
-        paste0(
-          "Current records are unavailable; showing the last persisted snapshot (version ",
-          snapshot_info$version %||% "unknown", ")."
-        ),
-        type = "warning", duration = 10
-      )
-      initial_records <- snapshot_info$records
-    }
-  } else if (is.null(snapshot_info$records)) {
-    initial_records <- live_records
-  } else {
-    live_version <- tryCatch(
-      curation_snapshot_version(live_records, scope, config = config),
-      error = function(e) NULL
-    )
-    if (!is.null(snapshot_info$version) && identical(live_version, snapshot_info$version)) {
-      initial_records <- snapshot_info$records
-    } else {
-      # The cached row is for an older corpus/configuration.  Keep the live
-      # frame in this session and force the next explicit rebuild to publish a
-      # new immutable artifact with expected_revision = 0.
       initial_records <- live_records
-      snapshot_info <- list(records = NULL, id = NULL, version = NULL, revision = 0L)
+      next_version <- tryCatch(
+        curation_snapshot_version(live_records, scope, config = config),
+        error = function(error) error
+      )
+      written <- if (inherits(next_version, "error")) {
+        next_version
+      } else {
+        tryCatch(
+          curation_artifact_write_snapshot(
+            artifact_store,
+            scope,
+            snapshot = live_records,
+            actor = actor,
+            expected_revision = 0L
+          ),
+          error = identity
+        )
+      }
+      if (inherits(written, "error") ||
+        (is.list(written) && "ok" %in% names(written) && isFALSE(written$ok))) {
+        message <- if (inherits(written, "error")) {
+          conditionMessage(written)
+        } else {
+          "the artifact store rejected the write"
+        }
+        shiny::showNotification(
+          paste0("Initial snapshot was not persisted: ", message),
+          type = "warning", duration = 8
+        )
+        snapshot_info <- list(records = NULL, id = NULL, version = NULL, revision = 0L, metadata = list())
+      } else {
+        metadata <- attr(live_records, "curation_snapshot_metadata", exact = TRUE) %||% list()
+        metadata$schema_version <- metadata$schema_version %||% "curation-snapshot.v1"
+        snapshot_info <- list(
+          records = live_records,
+          id = written$snapshot_id %||% NULL,
+          version = written$version %||% next_version,
+          revision = as.integer(written$revision %||% 1L),
+          metadata = metadata
+        )
+        app_state$snapshot <- snapshot_info
+      }
     }
   }
   records <- shiny::reactiveVal(initial_records)
@@ -1583,6 +1640,15 @@ curation_app_server <- function(input, output, session, context) {
     }
     if (identical(snapshot_version(), next_version)) {
       records(fresh)
+      metadata <- attr(fresh, "curation_snapshot_metadata", exact = TRUE) %||% list()
+      metadata$schema_version <- metadata$schema_version %||% "curation-snapshot.v1"
+      app_state$snapshot <- list(
+        records = fresh,
+        id = snapshot_id(),
+        version = next_version,
+        revision = snapshot_revision(),
+        metadata = metadata
+      )
       shiny::showNotification("The current snapshot is already persisted.", type = "message")
       return()
     }
@@ -1590,13 +1656,15 @@ curation_app_server <- function(input, output, session, context) {
     # while this session was open.  Reuse it instead of trying to overwrite an
     # existing artifact path.
     existing <- curation_app_read_snapshot(
-      artifact_store, scope, mutation_actor, version = next_version
+      artifact_store, scope, mutation_actor,
+      version = next_version
     )
-    if (!is.null(existing$records)) {
+    if (curation_app_snapshot_compatible(existing, scope, config)) {
       records(fresh)
       snapshot_id(existing$id)
       snapshot_version(existing$version)
       snapshot_revision(existing$revision)
+      app_state$snapshot <- existing
       shiny::showNotification("Snapshot refreshed from the persisted artifact.", type = "message")
       return()
     }
@@ -1619,6 +1687,15 @@ curation_app_server <- function(input, output, session, context) {
     snapshot_id(written$snapshot_id %||% snapshot_id())
     snapshot_version(written$version %||% next_version)
     if (!is.null(written$revision)) snapshot_revision(as.integer(written$revision))
+    metadata <- attr(fresh, "curation_snapshot_metadata", exact = TRUE) %||% list()
+    metadata$schema_version <- metadata$schema_version %||% "curation-snapshot.v1"
+    app_state$snapshot <- list(
+      records = fresh,
+      id = written$snapshot_id %||% snapshot_id(),
+      version = written$version %||% next_version,
+      revision = as.integer(written$revision %||% snapshot_revision()),
+      metadata = metadata
+    )
     shiny::showNotification("Snapshot refreshed through the injected artifact store.", type = "message")
   })
 
@@ -2656,7 +2733,8 @@ curation_app <- function(
     actor_resolver = actor_resolver,
     actor_probe = actor_probe,
     logout_path = logout_path,
-    request = request
+    request = request,
+    app_state = new.env(parent = emptyenv())
   )
   shiny::shinyApp(
     ui = curation_app_ui(config, logout_path = logout_path),

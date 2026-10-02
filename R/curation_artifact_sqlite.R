@@ -236,7 +236,7 @@ curation_snapshot_version <- function(snapshot, scope, config = NULL, countries 
   corpus_fingerprint <- metadata$corpus_fingerprint %||% payload_fingerprint
   enrichment_schema <- metadata$enrichment_schema %||% curation_artifact_enrichment_schema
   fingerprint <- curation_artifact_hash(list(
-    schema = "curation-snapshot.v1",
+    schema = metadata$schema_version %||% "curation-snapshot.v1",
     project_id = scope$project_id,
     corpus_id = scope$corpus_id,
     config_id = scope$config_id,
@@ -626,15 +626,46 @@ curation_artifact_sqlite_snapshot_write <- function(
   parts <- curation_artifact_sqlite_snapshot_parts(scope, snapshot)
   paths <- state$paths
   path <- file.path(paths$snapshots, paste0(parts$snapshot_id, ".rds"))
-  curation_artifact_sqlite_atomic_save(snapshot, path)
+  conn <- curation_artifact_sqlite_state_connection(state)
   metadata <- parts$metadata
-  # A failed metadata registration leaves only an invisible immutable orphan.
-  # It must never remove or replace a visible prior artifact.
+  # Hold the writer lock through the existence check and publication. A repair
+  # must never unlink a snapshot another writer has just registered.
   curation_sqlite_with_transaction(
-    curation_artifact_sqlite_state_connection(state),
+    conn,
     function() {
+      existing <- DBI::dbGetQuery(
+        conn,
+        paste(
+          "SELECT path FROM curation_artifact_snapshots",
+          "WHERE project_id = ? AND corpus_id = ? AND config_id = ? AND version = ?"
+        ),
+        params = c(curation_artifact_sqlite_scope_params(scope), parts$version)
+      )
+      if (nrow(existing) > 0L) {
+        existing_path <- as.character(existing$path[[1L]])
+        existing_payload <- tryCatch(readRDS(existing_path), error = identity)
+        payload_ok <- !inherits(existing_payload, "error") && isTRUE(tryCatch(
+          identical(curation_snapshot_version(existing_payload, scope), parts$version),
+          error = function(error) FALSE
+        ))
+        if (!payload_ok) {
+          DBI::dbExecute(
+            conn,
+            paste(
+              "DELETE FROM curation_artifact_snapshots",
+              "WHERE project_id = ? AND corpus_id = ? AND config_id = ? AND version = ?"
+            ),
+            params = c(curation_artifact_sqlite_scope_params(scope), parts$version)
+          )
+          unlink(existing_path, force = TRUE)
+        }
+      } else if (file.exists(path)) {
+        # An unregistered file is an orphan from an interrupted publication.
+        unlink(path, force = TRUE)
+      }
+      curation_artifact_sqlite_atomic_save(snapshot, path)
       DBI::dbExecute(
-        curation_artifact_sqlite_state_connection(state),
+        conn,
         paste(
           "INSERT INTO curation_artifact_snapshots (",
           "project_id, corpus_id, config_id, version, snapshot_id, revision,",

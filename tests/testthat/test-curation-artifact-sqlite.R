@@ -521,3 +521,38 @@ test_that("independent sample writers cannot replace one explicit sample ID", {
   )
   expect_true(file.exists(read$path))
 })
+
+
+test_that("snapshot publication holds the writer lock and preserves generic immutable payloads", {
+  skip_if_not_installed("DBI")
+  skip_if_not_installed("RSQLite")
+  root <- withr::local_tempdir()
+  store <- curation_artifact_store_sqlite(list(root = root))
+  on.exit(store$close(), add = TRUE)
+  other <- DBI::dbConnect(RSQLite::SQLite(), file.path(root, "curation-artifacts.sqlite"))
+  on.exit(DBI::dbDisconnect(other), add = TRUE)
+  DBI::dbExecute(other, "PRAGMA busy_timeout = 0")
+  atomic_save <- get("curation_artifact_sqlite_atomic_save", asNamespace("planscanR.screen"))
+  lock_checks <- 0L
+  testthat::local_mocked_bindings(
+    curation_artifact_sqlite_atomic_save = function(value, path) {
+      lock_checks <<- lock_checks + 1L
+      expect_error(DBI::dbExecute(other, "BEGIN IMMEDIATE"), "locked")
+      atomic_save(value, path)
+    },
+    .package = "planscanR.screen"
+  )
+  scope <- c3_test_scope()
+  actor <- c3_test_actor("alice")
+  payload <- list(records = "a generic serializable payload")
+  written <- curation_artifact_write_snapshot(store, scope, payload, actor, 0L)
+  expect_error(curation_artifact_write_snapshot(store, scope, payload, actor, 0L),
+    class = "planscanR_error_curation_conflict"
+  )
+  expect_identical(curation_artifact_read_snapshot(store, scope, actor)$payload, payload)
+  writeLines("corrupt", written$path)
+  repaired <- curation_artifact_write_snapshot(store, scope, payload, actor, 0L)
+  expect_identical(repaired$version, written$version)
+  expect_identical(curation_artifact_read_snapshot(store, scope, actor)$payload, payload)
+  expect_identical(lock_checks, 3L)
+})

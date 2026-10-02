@@ -95,6 +95,289 @@ test_that("the app rebuild persists a content-derived snapshot version", {
   expect_identical(saved$records[, c("country", "document_id")], live[, c("country", "document_id")])
 })
 
+test_that("compatible persisted startup does not read the provider", {
+  curation_app_c3_skip()
+  root <- withr::local_tempdir()
+  review_repository <- curation_review_repository_sqlite(file.path(root, "reviews.sqlite"))
+  artifact_store <- curation_artifact_store_sqlite(list(root = file.path(root, "artifacts")))
+  on.exit(review_repository$close(), add = TRUE)
+  on.exit(artifact_store$close(), add = TRUE)
+
+  records <- curation_app_c3_records()
+  provider_calls <- 0L
+  provider <- curation_records_provider(
+    read_fn = function(corpus_id, countries) {
+      provider_calls <<- provider_calls + 1L
+      records
+    },
+    refresh_fn = function(corpus_id, countries) {
+      provider_calls <<- provider_calls + 1L
+      records
+    }
+  )
+  config <- curation_app_c3_config(root)
+  actor <- curation_actor("alice", roles = "reviewer")
+  prepared <- curation_records_snapshot(provider, config)
+  curation_artifact_write_snapshot(
+    artifact_store, config$identity, prepared, actor,
+    expected_revision = 0L
+  )
+  provider_calls <- 0L
+  artifact_reads <- 0L
+  enrichment_calls <- 0L
+  real_enrich <- get("curation_enrich_records", asNamespace("planscanR.screen"))
+  real_snapshot_read <- get(
+    "curation_artifact_read_snapshot",
+    envir = asNamespace("planscanR.screen")
+  )
+  testthat::local_mocked_bindings(
+    curation_enrich_records = function(...) {
+      enrichment_calls <<- enrichment_calls + 1L
+      real_enrich(...)
+    },
+    curation_artifact_read_snapshot = function(store, scope, actor, version = NULL) {
+      artifact_reads <<- artifact_reads + 1L
+      real_snapshot_read(store, scope, actor, version = version)
+    },
+    .package = "planscanR.screen"
+  )
+
+  context <- list(
+    config = config,
+    records_provider = provider,
+    review_repository = review_repository,
+    artifact_store = artifact_store,
+    actor_resolver = curation_actor_resolver(function(request) actor),
+    request = NULL,
+    app_state = new.env(parent = emptyenv())
+  )
+  shiny::testServer(
+    function(input, output, session) {
+      curation_app_server(input, output, session, context)
+    },
+    {}
+  )
+  shiny::testServer(
+    function(input, output, session) {
+      curation_app_server(input, output, session, context)
+    },
+    {}
+  )
+
+  expect_identical(provider_calls, 0L)
+  expect_identical(artifact_reads, 1L)
+  expect_identical(enrichment_calls, 0L)
+})
+
+test_that("a cold startup persists once and a restart reuses the snapshot", {
+  curation_app_c3_skip()
+  root <- withr::local_tempdir()
+  review_repository <- curation_review_repository_sqlite(file.path(root, "reviews.sqlite"))
+  artifact_store <- curation_artifact_store_sqlite(list(root = file.path(root, "artifacts")))
+  on.exit(review_repository$close(), add = TRUE)
+  on.exit(artifact_store$close(), add = TRUE)
+
+  provider_calls <- 0L
+  provider <- curation_records_provider(
+    read_fn = function(corpus_id, countries) {
+      provider_calls <<- provider_calls + 1L
+      curation_app_c3_records()
+    },
+    refresh_fn = function(corpus_id, countries) {
+      provider_calls <<- provider_calls + 1L
+      curation_app_c3_records()
+    }
+  )
+  config <- curation_app_c3_config(root)
+  actor <- curation_actor("alice", roles = "reviewer")
+  context <- list(
+    config = config,
+    records_provider = provider,
+    review_repository = review_repository,
+    artifact_store = artifact_store,
+    actor_resolver = curation_actor_resolver(function(request) actor),
+    request = NULL
+  )
+
+  shiny::testServer(
+    function(input, output, session) {
+      curation_app_server(input, output, session, context)
+    },
+    {}
+  )
+  expect_identical(provider_calls, 1L)
+
+  provider_calls <- 0L
+  shiny::testServer(
+    function(input, output, session) {
+      curation_app_server(input, output, session, context)
+    },
+    {}
+  )
+  expect_identical(provider_calls, 0L)
+  expect_true(!is.null(curation_app_read_snapshot(artifact_store, config$identity, actor)$records))
+})
+
+test_that("a corrupt or schema-mismatched snapshot is rebuilt once and then reused", {
+  curation_app_c3_skip()
+  for (scenario in c("corrupt", "schema", "config")) {
+    root <- withr::local_tempdir()
+    review_repository <- curation_review_repository_sqlite(file.path(root, "reviews.sqlite"))
+    artifact_store <- curation_artifact_store_sqlite(list(root = file.path(root, "artifacts")))
+    on.exit(review_repository$close(), add = TRUE)
+    on.exit(artifact_store$close(), add = TRUE)
+
+    provider_calls <- 0L
+    provider <- curation_records_provider(
+      read_fn = function(corpus_id, countries) {
+        provider_calls <<- provider_calls + 1L
+        curation_app_c3_records()
+      },
+      refresh_fn = function(corpus_id, countries) {
+        provider_calls <<- provider_calls + 1L
+        curation_app_c3_records()
+      }
+    )
+    config <- curation_app_c3_config(root)
+    actor <- curation_actor("alice", roles = "reviewer")
+    prepared <- curation_records_snapshot(provider, config)
+    if (identical(scenario, "schema")) {
+      metadata <- attr(prepared, "curation_snapshot_metadata", exact = TRUE)
+      metadata$schema_version <- "curation-snapshot.legacy"
+      attr(prepared, "curation_snapshot_metadata") <- metadata
+    }
+    curation_artifact_write_snapshot(
+      artifact_store, config$identity, prepared, actor,
+      expected_revision = 0L
+    )
+    saved <- curation_artifact_read_snapshot(artifact_store, config$identity, actor)
+    if (identical(scenario, "corrupt")) writeLines("broken", saved$path)
+    if (identical(scenario, "config")) config$lexicon$topic <- "changed"
+    provider_calls <- 0L
+
+    context <- list(
+      config = config,
+      records_provider = provider,
+      review_repository = review_repository,
+      artifact_store = artifact_store,
+      actor_resolver = curation_actor_resolver(function(request) actor),
+      request = NULL
+    )
+    shiny::testServer(
+      function(input, output, session) {
+        curation_app_server(input, output, session, context)
+      },
+      {}
+    )
+    expect_identical(provider_calls, 1L)
+    expect_true(!is.null(curation_app_read_snapshot(artifact_store, config$identity, actor)$records))
+
+    provider_calls <- 0L
+    shiny::testServer(
+      function(input, output, session) {
+        curation_app_server(input, output, session, context)
+      },
+      {}
+    )
+    expect_identical(provider_calls, 0L)
+    artifact_store$close()
+    review_repository$close()
+  }
+})
+
+test_that("explicit rebuild publishes new scores and failed refresh keeps the prior snapshot", {
+  curation_app_c3_skip()
+  root <- withr::local_tempdir()
+  review_repository <- curation_review_repository_sqlite(file.path(root, "reviews.sqlite"))
+  artifact_store <- curation_artifact_store_sqlite(list(root = file.path(root, "artifacts")))
+  on.exit(review_repository$close(), add = TRUE)
+  on.exit(artifact_store$close(), add = TRUE)
+
+  base <- curation_app_c3_records()
+  base$relevance_score_topic <- c(0.1, 0.2)
+  refreshed <- base
+  refreshed$relevance_score_topic <- c(0.9, 0.8)
+  refresh_mode <- "changed"
+  provider_calls <- 0L
+  provider <- curation_records_provider(
+    read_fn = function(corpus_id, countries) {
+      provider_calls <<- provider_calls + 1L
+      base
+    },
+    refresh_fn = function(corpus_id, countries) {
+      provider_calls <<- provider_calls + 1L
+      if (identical(refresh_mode, "error")) stop("fixture refresh failed")
+      refreshed
+    }
+  )
+  config <- curation_app_c3_config(root)
+  actor <- curation_actor("alice", roles = "reviewer")
+  prepared <- curation_records_snapshot(provider, config)
+  curation_artifact_write_snapshot(
+    artifact_store, config$identity, prepared, actor,
+    expected_revision = 0L
+  )
+  provider_calls <- 0L
+  context <- list(
+    config = config,
+    records_provider = provider,
+    review_repository = review_repository,
+    artifact_store = artifact_store,
+    actor_resolver = curation_actor_resolver(function(request) actor),
+    request = NULL,
+    app_state = new.env(parent = emptyenv())
+  )
+
+  shiny::testServer(
+    function(input, output, session) {
+      curation_app_server(input, output, session, context)
+    },
+    {
+      curation_app_c3_pulse(session, "rebuild", 1L)
+    }
+  )
+  expect_identical(provider_calls, 1L)
+  published <- curation_app_read_snapshot(artifact_store, config$identity, actor)
+  expect_true(any(published$records$cosine_max > prepared$cosine_max))
+  published_version <- published$version
+
+  refreshed$relevance_score_topic <- c(0.3, 0.4)
+  real_write <- get("curation_artifact_write_snapshot", asNamespace("planscanR.screen"))
+  reject_write <- TRUE
+  testthat::local_mocked_bindings(
+    curation_artifact_write_snapshot = function(...) {
+      if (reject_write) stop("fixture publication failure")
+      real_write(...)
+    },
+    .package = "planscanR.screen"
+  )
+  shiny::testServer(
+    function(input, output, session) curation_app_server(input, output, session, context),
+    {
+      curation_app_c3_pulse(session, "rebuild", 1L)
+    }
+  )
+  expect_identical(context$app_state$snapshot$version, published_version)
+  expect_identical(context$app_state$snapshot$records, published$records)
+  expect_identical(curation_app_read_snapshot(artifact_store, config$identity, actor)$version, published_version)
+  reject_write <- FALSE
+  refresh_mode <- "error"
+  provider_calls <- 0L
+  shiny::testServer(
+    function(input, output, session) {
+      curation_app_server(input, output, session, context)
+    },
+    {
+      curation_app_c3_pulse(session, "rebuild", 1L)
+    }
+  )
+  expect_identical(provider_calls, 1L)
+  expect_identical(
+    curation_app_read_snapshot(artifact_store, config$identity, actor)$version,
+    published_version
+  )
+})
+
 test_that("a cached snapshot is rejected when its configuration fingerprint is stale", {
   root <- withr::local_tempdir()
   config <- curation_app_c3_config(root)
@@ -190,7 +473,8 @@ test_that("cross-session review refresh preserves a pending local CAS revision",
   )
   pending_key <- curation_app_key_string("nl", "pending", "alice")
   merged <- curation_app_merge_reviews_preserving_pending(
-    local, incoming, pending_keys = pending_key
+    local, incoming,
+    pending_keys = pending_key
   )
   pending <- merged[merged$document_id == "pending", , drop = FALSE]
   remote <- merged[merged$document_id == "remote", , drop = FALSE]
@@ -271,4 +555,45 @@ test_that("model provenance contains the immutable C3 training inputs", {
   expect_identical(provenance$creator, actor$id)
   expect_identical(provenance$corpus_snapshot$corpus_id, scope$corpus_id)
   expect_identical(provenance$corpus_snapshot$version, provenance$snapshot_version)
+})
+
+
+test_that("separate apps and scopes isolate corpora while reviewers keep their own decisions", {
+  curation_app_c3_skip()
+  root <- withr::local_tempdir()
+  repo <- curation_review_repository_sqlite(file.path(root, "reviews.sqlite"))
+  store <- curation_artifact_store_sqlite(list(root = file.path(root, "artifacts")))
+  on.exit(repo$close(), add = TRUE)
+  on.exit(store$close(), add = TRUE)
+  config <- curation_app_c3_config(root)
+  actor <- curation_actor("alice", roles = "reviewer")
+  provider <- curation_records_provider(function(corpus_id, countries) curation_app_c3_records())
+  resolver <- curation_actor_resolver(function(request) actor)
+  app <- curation_app(config, provider, repo, store, resolver)
+  other_config <- config
+  other_config$identity <- curation_scope("other-project", "other-corpus", "c3-app.v1")
+  other <- curation_app(other_config, provider, repo, store, resolver)
+  state <- environment(app$serverFuncSource())$context$app_state
+  other_state <- environment(other$serverFuncSource())$context$app_state
+  expect_false(identical(state, other_state))
+  for (reviewer in c("alice", "bob")) {
+    actor <- curation_actor(reviewer, roles = "reviewer")
+    shiny::testServer(app, {
+      curation_app_c3_prime(session, "row_decision", list(
+        id = "prime", country = "nl", decision = "keep", source = "browse", revision = 0L, nonce = 0L
+      ))
+      curation_app_c3_pulse(session, "row_decision", list(
+        id = "c3-one", country = "nl", decision = if (reviewer == "alice") "keep" else "drop",
+        source = "browse", revision = 0L, nonce = 1L
+      ))
+    })
+  }
+  rows <- curation_review_list(repo, config$identity, actor = actor)
+  expect_setequal(rows$reviewer_id, c("alice", "bob"))
+  expect_identical(rows$decision[rows$reviewer_id == "alice"], "keep")
+  expect_identical(rows$decision[rows$reviewer_id == "bob"], "drop")
+  expect_setequal(ls(state), "snapshot")
+  shiny::testServer(other, {})
+  expect_false(identical(state$snapshot$version, other_state$snapshot$version))
+  expect_equal(nrow(curation_review_list(repo, other_config$identity, actor = actor)), 0L)
 })
