@@ -119,6 +119,213 @@ test_that("snapshot adapter uses explicit corpus and exported index seam", {
   expect_true(all(calls$cache == "/fixture/cache"))
 })
 
+test_that("cache provider projects decoded rows while preserving full-source provenance", {
+  caches <- character(0)
+  on.exit(unlink(caches, recursive = TRUE, force = TRUE), add = TRUE)
+  make_cache <- function(
+    section_url,
+    status = "downloaded",
+    discovery_count = 1L
+  ) {
+    cache <- tempfile("planscanR-screen-cache-")
+    dir.create(cache, recursive = TRUE)
+    downloads <- tibble::tibble(
+      url = c(
+        "https://fixture/base.pdf",
+        section_url,
+        "https://fixture/advice.pdf"
+      ),
+      local_path = rep(NA_character_, 3L),
+      status = rep(status, 3L),
+      size_bytes = c(10, 11, 12),
+      sha256 = rep(NA_character_, 3L),
+      reason = rep(NA_character_, 3L)
+    )
+    record <- tibble::tibble(
+      country = "nl",
+      source_portal = "commissiemer.nl",
+      document_id = "cache-001",
+      url = "https://fixture/cache-001",
+      retrieved_at = as.POSIXct("2026-05-26 12:00:00", tz = "UTC"),
+      attachment_urls = list(c("https://fixture/base.pdf")),
+      attachment_urls_source = list(c(section_url)),
+      attachment_urls_advice = list(c("https://fixture/advice.pdf")),
+      local_path = list(NA_character_),
+      local_path_source = list(NA_character_),
+      local_path_advice = list(NA_character_),
+      title = "Wind fixture",
+      summary = "wind",
+      competent_authority = "Fixture authority",
+      proponent = "Fixture proponent",
+      native_type = "assessment",
+      date_decision = as.Date(NA),
+      download_status = list(downloads),
+      discovery_log = list(list(source = "fixture", count = discovery_count))
+    )
+    planscanR::write_record_sidecar(
+      record,
+      downloads = downloads,
+      root = cache
+    )
+    caches <<- c(caches, cache)
+    cache
+  }
+
+  config <- curation_records_test_config()
+  cache_a <- make_cache("https://fixture/source-a.pdf")
+  provider_a <- curation_records_provider_cache(cache_a, batch_size = 1L)
+  actual_a <- curation_records_snapshot(provider_a, config)
+  metadata_a <- attr(actual_a, "curation_snapshot_metadata", exact = TRUE)
+  attr(actual_a, "curation_snapshot_metadata") <- NULL
+
+  raw_a <- planscanR::index_cache(cache_dir = cache_a)
+  expected_a <- curation_enrich_records(raw_a, config)
+  expect_identical(actual_a, expected_a)
+  expect_false(any(vapply(actual_a, is.list, logical(1))))
+  expect_identical(actual_a$n_downloaded, 3L)
+  expect_match(metadata_a$corpus_fingerprint, "^decoded-row-manifest-v1:")
+
+  cache_b <- make_cache("https://fixture/source-b.pdf")
+  provider_b <- curation_records_provider_cache(cache_b, batch_size = 1L)
+  actual_b <- curation_records_snapshot(provider_b, config)
+  metadata_b <- attr(actual_b, "curation_snapshot_metadata", exact = TRUE)
+  attr(actual_b, "curation_snapshot_metadata") <- NULL
+  expect_identical(actual_a, actual_b)
+  expect_false(identical(metadata_a$corpus_fingerprint, metadata_b$corpus_fingerprint))
+
+  cache_c <- make_cache(
+    "https://fixture/source-a.pdf",
+    status = "failed",
+    discovery_count = 9L
+  )
+  provider_c <- curation_records_provider_cache(cache_c, batch_size = 1L)
+  actual_c <- curation_records_snapshot(provider_c, config)
+  metadata_c <- attr(actual_c, "curation_snapshot_metadata", exact = TRUE)
+  expect_false(identical(metadata_a$corpus_fingerprint, metadata_c$corpus_fingerprint))
+})
+
+test_that("cache provider manifest follows country filters and custom seams stay unchanged", {
+  cache <- tempfile("planscanR-screen-cache-")
+  dir.create(cache, recursive = TRUE)
+  on.exit(unlink(cache, recursive = TRUE, force = TRUE), add = TRUE)
+  make_record <- function(country, document_id) {
+    tibble::tibble(
+      country = country,
+      source_portal = "fixture",
+      document_id = document_id,
+      url = paste0("https://fixture/", document_id),
+      retrieved_at = as.POSIXct("2026-05-26 12:00:00", tz = "UTC"),
+      attachment_urls = list(character(0)),
+      local_path = list(character(0)),
+      title = document_id,
+      summary = "Fixture",
+      competent_authority = NA_character_,
+      proponent = NA_character_,
+      date_decision = as.Date(NA)
+    )
+  }
+  planscanR::write_record_sidecar(make_record("nl", "nl-1"), root = cache)
+  planscanR::write_record_sidecar(make_record("de", "de-1"), root = cache)
+  config <- curation_records_test_config()
+  provider <- curation_records_provider_cache(cache, batch_size = 1L)
+  baseline <- curation_records_snapshot(provider, config)
+  baseline_fingerprint <- attr(
+    baseline,
+    "curation_snapshot_metadata",
+    exact = TRUE
+  )$corpus_fingerprint
+  reverse <- curation_records_snapshot(provider, config, countries = c("de", "nl"))
+  expect_identical(
+    baseline_fingerprint,
+    attr(reverse, "curation_snapshot_metadata", exact = TRUE)$corpus_fingerprint
+  )
+  actual_reverse <- curation_records_snapshot(
+    provider,
+    config,
+    countries = c("nl", "de")
+  )
+  expect_identical(actual_reverse$country, c("nl", "de"))
+  expect_identical(
+    baseline_fingerprint,
+    attr(actual_reverse, "curation_snapshot_metadata", exact = TRUE)$corpus_fingerprint
+  )
+  planscanR::write_record_sidecar(make_record("at", "at-1"), root = cache)
+  added <- curation_records_snapshot(provider, config)
+  added_fingerprint <- attr(
+    added,
+    "curation_snapshot_metadata",
+    exact = TRUE
+  )$corpus_fingerprint
+  expect_false(identical(baseline_fingerprint, added_fingerprint))
+  at_sidecar <- list.files(
+    file.path(cache, "files"),
+    pattern = "at-1\\.meta\\.json$",
+    recursive = TRUE,
+    full.names = TRUE
+  )
+  unlink(at_sidecar)
+  removed <- curation_records_snapshot(provider, config)
+  expect_identical(
+    baseline_fingerprint,
+    attr(removed, "curation_snapshot_metadata", exact = TRUE)$corpus_fingerprint
+  )
+  filtered <- curation_records_snapshot(provider, config, countries = "nl")
+  expect_identical(filtered$country, "nl")
+  expect_match(
+    attr(filtered, "curation_snapshot_metadata", exact = TRUE)$corpus_fingerprint,
+    "^decoded-row-manifest-v1:"
+  )
+
+  calls <- character(0)
+  custom <- curation_records_provider_cache(
+    cache_dir = "/fixture/cache",
+    index_fn = function(cache_dir, country) {
+      calls <<- c(calls, country %||% "all")
+      curation_records_test_frame()
+    }
+  )
+  custom_records <- curation_records_read(custom, "corpus-a")
+  expect_identical(calls, "all")
+  expect_true(any(vapply(custom_records, is.list, logical(1))))
+})
+
+test_that("custom providers keep full-frame fingerprints for source attributes", {
+  raw <- curation_records_test_frame()
+  attr(raw, "curation_source_fingerprint") <-
+    "decoded-row-manifest-v1:forged"
+  expected <- curation_artifact_content_fingerprint(raw)
+  provider <- curation_records_provider(
+    read_fn = function(corpus_id, countries = NULL) raw
+  )
+  snapshot <- curation_records_snapshot(
+    provider,
+    curation_records_test_config()
+  )
+  metadata <- attr(snapshot, "curation_snapshot_metadata", exact = TRUE)
+  expect_identical(metadata$corpus_fingerprint, expected)
+})
+
+test_that("tagged cache providers fail closed without a valid manifest", {
+  provider <- curation_records_provider_cache(tempdir())
+  provider$read_fn <- function(corpus_id, countries = NULL) {
+    records <- curation_records_test_frame()
+    attr(records, "curation_source_fingerprint") <-
+      "decoded-row-manifest-v1:short"
+    records
+  }
+  expect_error(
+    curation_records_snapshot(provider, curation_records_test_config()),
+    class = "planscanR_error_curation_records"
+  )
+  provider$read_fn <- function(corpus_id, countries = NULL) {
+    curation_records_test_frame()
+  }
+  expect_error(
+    curation_records_snapshot(provider, curation_records_test_config()),
+    class = "planscanR_error_curation_records"
+  )
+})
+
 test_that("random samples preserve legacy stratification and RNG state", {
   records <- curation_records_test_frame()
   set.seed(101)

@@ -38,12 +38,21 @@ curation_artifact_sqlite_require_packages <- function() {
 }
 
 curation_artifact_hash <- function(value) {
-  bytes <- serialize(value, NULL, version = 3)
   path <- tempfile("planscanR-artifact-hash-")
-  on.exit(unlink(path, force = TRUE), add = TRUE)
+  connection <- NULL
+  on.exit(
+    {
+      if (!is.null(connection)) {
+        try(close(connection), silent = TRUE)
+      }
+      unlink(path, force = TRUE)
+    },
+    add = TRUE
+  )
   connection <- file(path, open = "wb")
-  writeBin(bytes, connection)
+  serialize(value, connection, version = 3)
   close(connection)
+  connection <- NULL
   unname(as.character(tools::md5sum(path)))
 }
 

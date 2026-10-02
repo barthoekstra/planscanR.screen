@@ -4,17 +4,28 @@
 \alias{curation_records_provider_cache}
 \title{Build a planscanR cache-backed record provider.}
 \usage{
-curation_records_provider_cache(cache_dir, index_fn = planscanR::index_cache)
+curation_records_provider_cache(
+  cache_dir,
+  index_fn = planscanR::index_cache,
+  batch_size = 512L
+)
 }
 \arguments{
 \item{cache_dir}{Explicit planscanR cache root.}
 
 \item{index_fn}{Injectable equivalent of \code{\link[planscanR:index_cache]{planscanR::index_cache()}} for
 offline fixtures. It must accept \code{cache_dir} and \code{country}.}
+
+\item{batch_size}{Number of cache rows combined per leaf index batch. The
+default is 512 and is passed to the leaf row-transform seam when the
+default \code{\link[planscanR:index_cache]{planscanR::index_cache()}} is used.}
 }
 \value{
 A \code{planscanR_curation_records_provider} object.
 }
 \description{
-Build a planscanR cache-backed record provider.
+When the default \code{\link[planscanR:index_cache]{planscanR::index_cache()}} is used, the provider passes the
+bounded row-transform seam through to the leaf package. Its read callback
+also retains a versioned fingerprint of every successfully decoded complete
+row for \code{\link[=curation_records_snapshot]{curation_records_snapshot()}} provenance metadata.
 }
