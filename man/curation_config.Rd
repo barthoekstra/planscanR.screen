@@ -39,7 +39,9 @@ same-row data frame with a logical \code{selected} column.}
 accepts \code{records} and \code{context} and returns a logical stage mask.}
 
 \item{branding}{Explicit named branding values, including \code{title} and
-\code{primary}.}
+\code{primary}. Optional \code{secondary}, \code{success}, \code{bootswatch}, and
+\code{border_radius} values configure the app theme. Supplying both
+\code{secondary} and \code{success} enables a three-colour navbar gradient.}
 
 \item{artifact_paths}{Explicit named artifact paths, including \code{root}.}
 
