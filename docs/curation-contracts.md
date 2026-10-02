@@ -304,6 +304,17 @@ review snapshot fingerprint, snapshot version, configuration fingerprint,
 corpus snapshot/version, training parameters, creator actor, and creation
 time. A conflicting creator or non-zero expected revision is rejected.
 
+The persisted `model_fingerprint` for a new model uses
+`rds-file-sha256-v1:<64 lowercase hex>` and covers the exact RDS bytes written
+by the atomic save. Reads and publication capture those bytes once, verify the
+fingerprint, and only then deserialize and validate the model class from that
+same byte stream. Unknown or malformed tagged fingerprints fail closed. Rows
+with an unprefixed legacy fingerprint retain the existing object-hash
+verification exactly; they are not rewritten or silently migrated. If a legacy
+workflow cannot produce a stable object hash across save and reload, recovery
+writes a new immutable version with the tagged byte fingerprint, leaving the
+legacy row and its metadata unchanged.
+
 Publication validates the scoped model row and loads its RDS before a short
 compare-and-swap transaction updates the active reference. The expected active
 revision must match, so two independent publishers cannot overwrite one
@@ -311,3 +322,36 @@ another. Missing, malformed, or cross-scope targets fail before the reference
 changes; the previous active model remains readable after every failed
 publication. Legacy `selection_model.rds` files are read as import inputs and
 are never replaced automatically.
+
+### App integration invariants
+
+The generic Shiny app treats the C3 store as the restart authority while still
+checking the current provider before reusing a cached snapshot. On startup it
+computes the content-derived version for the current corpus and configuration;
+the persisted payload is reused only when that version matches. An unavailable
+provider may fall back to the last readable artifact for restart recovery. An
+explicit rebuild writes the enriched data frame with its snapshot metadata and
+uses `expected_revision = 0` for a new immutable version; it never increments a
+session-local integer version or overwrites a prior artifact path.
+
+Random-review queues are immutable samples. Each queue draw receives a new
+sample ID and is written with `expected_revision = 0`; restart recovery selects
+the newest sample for the authenticated reviewer. Review CAS conflicts perform
+one bounded read of the affected key, update the session view with the canonical
+repository row, and do not retry the stale mutation. Bulk conflicts refresh the
+repository-reported key when available; the bulk upsert operation is atomic and
+leaves all of its writes rolled back on conflict. Bulk clear actions use the
+existing per-row clear contract.
+
+Training captures the active-model revision before fitting and supplies review,
+snapshot, configuration, corpus, creator, and training-parameter provenance.
+The trained object enters the session only after its immutable write and active
+model publication both succeed, so a failed publication leaves the previously
+displayed model usable. The app re-resolves the trusted actor before every
+repository or artifact mutation. Deployments may provide a separate
+non-touching actor probe; when present, the app uses it to periodically close
+sockets whose session credential is no longer valid and refresh review rows
+from the repository. A review key being saved by the browser is held at its
+last local revision during that read, so a later write receives the expected
+CAS conflict instead of being silently advanced. The mutation resolver is the
+sole source of current roles.

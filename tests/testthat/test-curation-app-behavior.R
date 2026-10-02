@@ -227,9 +227,10 @@ curation_app_behavior_context <- function(
   repository,
   artifacts,
   config = curation_app_behavior_config(),
-  records = curation_app_behavior_records()
+  records = curation_app_behavior_records(),
+  roles = "reviewer"
 ) {
-  actor <- curation_actor(actor_id, roles = "reviewer", display_name = actor_id)
+  actor <- curation_actor(actor_id, roles = roles, display_name = actor_id)
   list(
     config = config,
     records_provider = curation_app_behavior_provider(records),
@@ -259,6 +260,16 @@ curation_app_behavior_prime <- function(session, input_id, value) {
   # Shiny observers in curation_app_server use ignoreInit = TRUE.  Prime the
   # mock input once so the following pulse represents exactly one user event.
   curation_app_behavior_pulse(session, input_id, value)
+}
+
+curation_app_behavior_display_payload <- function(data, reviews, reviewer_id, table_id) {
+  rows <- curation_app_review_display_rows(data, reviews, reviewer_id)
+  list(
+    table_id = table_id,
+    render_id = curation_app_review_display_token(data, reviews, reviewer_id),
+    rows = rows,
+    nonce = 1L
+  )
 }
 
 curation_app_behavior_cleanup_db <- function(path, repository) {
@@ -314,13 +325,13 @@ test_that("curation app leaves a stale same-actor session unchanged", {
     curation_app_behavior_prime(
       session_a,
       "row_decision",
-      list(id = "prime", country = "nl", decision = "keep", source = "browse", nonce = 0L)
+      list(id = "prime", country = "nl", decision = "keep", source = "browse", revision = 0L, nonce = 0L)
     )
     curation_app_behavior_pulse(
       session_a,
       "row_decision",
       list(
-        id = "shared", country = "nl", decision = "drop", source = "browse", nonce = 1L,
+        id = "shared", country = "nl", decision = "drop", source = "browse", revision = 1L, nonce = 1L,
         reviewer_id = "spoofed-input"
       )
     )
@@ -338,13 +349,13 @@ test_that("curation app leaves a stale same-actor session unchanged", {
     curation_app_behavior_prime(
       session_b,
       "row_decision",
-      list(id = "prime", country = "nl", decision = "keep", source = "browse", nonce = 0L)
+      list(id = "prime", country = "nl", decision = "keep", source = "browse", revision = 0L, nonce = 0L)
     )
     curation_app_behavior_pulse(
       session_b,
       "row_decision",
       list(
-        id = "shared", country = "nl", decision = "keep", source = "browse", nonce = 1L,
+        id = "shared", country = "nl", decision = "keep", source = "browse", revision = 1L, nonce = 1L,
         reviewer_id = "spoofed-input"
       )
     )
@@ -373,13 +384,13 @@ test_that("curation app keeps country/native IDs and actors isolated", {
     curation_app_behavior_prime(
       session,
       "row_decision",
-      list(id = "prime", country = "nl", decision = "keep", source = "browse", nonce = 0L)
+      list(id = "prime", country = "nl", decision = "keep", source = "browse", revision = 0L, nonce = 0L)
     )
     curation_app_behavior_pulse(
       session,
       "row_decision",
       list(
-        id = "shared", country = "nl", decision = "keep", source = "browse", nonce = 1L,
+        id = "shared", country = "nl", decision = "keep", source = "browse", revision = 0L, nonce = 1L,
         reviewer_id = "bob"
       )
     )
@@ -390,17 +401,17 @@ test_that("curation app keeps country/native IDs and actors isolated", {
     curation_app_behavior_prime(
       session,
       "row_decision",
-      list(id = "prime", country = "nl", decision = "keep", source = "browse", nonce = 0L)
+      list(id = "prime", country = "nl", decision = "keep", source = "browse", revision = 0L, nonce = 0L)
     )
     curation_app_behavior_pulse(
       session,
       "row_decision",
-      list(id = "shared", country = "de", decision = "drop", source = "browse", nonce = 3L)
+      list(id = "shared", country = "de", decision = "drop", source = "browse", revision = 0L, nonce = 3L)
     )
     curation_app_behavior_pulse(
       session,
       "row_decision",
-      list(id = "shared", country = "nl", decision = "unsure", source = "browse", nonce = 5L)
+      list(id = "shared", country = "nl", decision = "unsure", source = "browse", revision = 0L, nonce = 5L)
     )
   })
 
@@ -424,6 +435,118 @@ test_that("curation app keeps country/native IDs and actors isolated", {
     "unsure"
   )
   expect_false(any(rows$reviewer_id == "spoofed-input"))
+})
+
+test_that("admins can edit another reviewer's row through an explicit target CAS path", {
+  curation_app_behavior_skip()
+  db <- tempfile(fileext = ".sqlite")
+  repository <- curation_review_repository_sqlite(db)
+  on.exit(curation_app_behavior_cleanup_db(db, repository), add = TRUE)
+  config <- curation_app_behavior_config()
+  target <- data.frame(
+    country = "nl", document_id = "shared", reviewer_id = "bob",
+    decision = "keep", source = "random", note = "sample provenance",
+    sidecar_path = "/tmp/random-shared.json",
+    stringsAsFactors = FALSE
+  )
+  bob <- curation_actor("bob", roles = "reviewer")
+  expect_identical(curation_review_upsert(repository, config$identity, target, bob, 0L)$revision, 1L)
+  artifacts <- curation_app_behavior_artifacts()
+  admin_context <- curation_app_behavior_context(
+    "alice", repository, artifacts, config,
+    curation_app_behavior_records()[1:2, , drop = FALSE], roles = "admin"
+  )
+
+  shiny::testServer(curation_app_behavior_server(admin_context), {
+    curation_app_behavior_prime(session, "admin_row_decision", list())
+    curation_app_behavior_pulse(
+      session,
+      "admin_row_decision",
+      list(
+        country = "nl", document_id = "shared", reviewer = "bob",
+        decision = "drop", revision = 1L, nonce = 1L
+      )
+    )
+    changed <- curation_review_read(
+      repository, config$identity,
+      curation_review_key("nl", "shared", "bob"),
+      curation_actor("alice", roles = "admin")
+    )
+    expect_identical(changed$decision, "drop")
+    expect_identical(changed$source, "random")
+    expect_identical(changed$note, "sample provenance")
+    expect_identical(changed$sidecar_path, "/tmp/random-shared.json")
+    expect_identical(changed$revision, 2L)
+
+    # A queued click from the old row must be rejected and refresh the
+    # canonical target state rather than overwriting the newer decision.
+    curation_app_behavior_pulse(
+      session,
+      "admin_row_decision",
+      list(
+        country = "nl", document_id = "shared", reviewer = "bob",
+        decision = "keep", revision = 1L, nonce = 2L
+      )
+    )
+  })
+  after_conflict <- curation_review_read(
+    repository, config$identity,
+    curation_review_key("nl", "shared", "bob"),
+    curation_actor("alice", roles = "admin")
+  )
+  expect_identical(after_conflict$decision, "drop")
+  expect_identical(after_conflict$revision, 2L)
+
+  reviewer_context <- curation_app_behavior_context(
+    "alice", repository, artifacts, config,
+    curation_app_behavior_records()[1:2, , drop = FALSE], roles = "reviewer"
+  )
+  shiny::testServer(curation_app_behavior_server(reviewer_context), {
+    curation_app_behavior_prime(session, "admin_row_decision", list())
+    curation_app_behavior_pulse(
+      session,
+      "admin_row_decision",
+      list(
+        country = "nl", document_id = "shared", reviewer = "bob",
+        decision = "keep", revision = 2L, nonce = 3L
+      )
+    )
+  })
+  reviewer_forged <- curation_review_read(
+    repository, config$identity,
+    curation_review_key("nl", "shared", "bob"),
+    curation_actor("alice", roles = "reviewer")
+  )
+  expect_identical(reviewer_forged$decision, "drop")
+  expect_identical(reviewer_forged$revision, 2L)
+
+  roles <- "admin"
+  revoked_context <- curation_app_behavior_context(
+    "alice", repository, artifacts, config,
+    curation_app_behavior_records()[1:2, , drop = FALSE], roles = roles
+  )
+  revoked_context$actor_resolver <- curation_actor_resolver(function(request) {
+    curation_actor("alice", roles = roles)
+  })
+  shiny::testServer(curation_app_behavior_server(revoked_context), {
+    curation_app_behavior_prime(session, "admin_row_decision", list())
+    roles <<- "reviewer"
+    curation_app_behavior_pulse(
+      session,
+      "admin_row_decision",
+      list(
+        country = "nl", document_id = "shared", reviewer = "bob",
+        decision = "keep", revision = 2L, nonce = 4L
+      )
+    )
+  })
+  revoked <- curation_review_read(
+    repository, config$identity,
+    curation_review_key("nl", "shared", "bob"),
+    curation_actor("alice", roles = "reviewer")
+  )
+  expect_identical(revoked$decision, "drop")
+  expect_identical(revoked$revision, 2L)
 })
 
 test_that("curation app isolates config scopes, controls, and requests", {
@@ -469,12 +592,12 @@ test_that("curation app isolates config scopes, controls, and requests", {
     curation_app_behavior_prime(
       session,
       "row_decision",
-      list(id = "prime", country = "nl", decision = "keep", source = "browse", nonce = 0L)
+      list(id = "prime", country = "nl", decision = "keep", source = "browse", revision = 0L, nonce = 0L)
     )
     curation_app_behavior_pulse(
       session,
       "row_decision",
-      list(id = "config-a-record", country = "nl", decision = "keep", source = "browse", nonce = 1L)
+      list(id = "config-a-record", country = "nl", decision = "keep", source = "browse", revision = 0L, nonce = 1L)
     )
   })
 
@@ -487,12 +610,12 @@ test_that("curation app isolates config scopes, controls, and requests", {
     curation_app_behavior_prime(
       session,
       "row_decision",
-      list(id = "prime", country = "nl", decision = "keep", source = "browse", nonce = 0L)
+      list(id = "prime", country = "nl", decision = "keep", source = "browse", revision = 0L, nonce = 0L)
     )
     curation_app_behavior_pulse(
       session,
       "row_decision",
-      list(id = "config-b-record-1", country = "nl", decision = "drop", source = "browse", nonce = 1L)
+      list(id = "config-b-record-1", country = "nl", decision = "drop", source = "browse", revision = 0L, nonce = 1L)
     )
   })
 
@@ -546,28 +669,40 @@ test_that("curation app keeps persisted review columns aligned across writes", {
     curation_app_behavior_prime(
       session,
       "row_decision",
-      list(id = "prime", country = "nl", decision = "keep", source = "browse", nonce = 0L)
+      list(id = "prime", country = "nl", decision = "keep", source = "browse", revision = 0L, nonce = 0L)
     )
     curation_app_behavior_pulse(
       session,
       "row_decision",
-      list(id = "shared", country = "nl", decision = "unsure", source = "browse", nonce = 1L)
+      list(id = "shared", country = "nl", decision = "unsure", source = "browse", revision = 1L, nonce = 1L)
     )
     curation_app_behavior_pulse(
       session,
       "row_decision",
-      list(id = "shared", country = "nl", decision = NULL, source = "browse", nonce = 2L)
+      list(id = "shared", country = "nl", decision = NULL, source = "browse", revision = 2L, nonce = 2L)
     )
     session$setInputs(
       countries = c("nl", "de"), stage_filter = "all",
       review_tbl__reactable__selected = 2L
     )
+    current_reviews <- curation_review_list(repository, config$identity, actor = actor)
+    displayed <- curation_app_behavior_display_payload(
+      curation_app_behavior_records()[1:2, , drop = FALSE],
+      current_reviews,
+      "alice",
+      "review_tbl"
+    )
+    displayed$rows <- Filter(
+      function(row) identical(as.character(row$country), "de") && identical(as.character(row$document_id), "shared"),
+      displayed$rows
+    )
+    session$setInputs(review_bulk_display = displayed)
     session$flushReact()
     curation_app_behavior_pulse(session, "mark_keep", 1L)
     curation_app_behavior_pulse(
       session,
       "row_decision",
-      list(id = "shared", country = "nl", decision = "keep", source = "browse", nonce = 3L)
+      list(id = "shared", country = "nl", decision = "keep", source = "browse", revision = 3L, nonce = 3L)
     )
   })
 
@@ -584,6 +719,120 @@ test_that("curation app keeps persisted review columns aligned across writes", {
   expect_identical(other$decision, "keep")
   expect_identical(other$source, "browse")
   expect_identical(other$revision, 2L)
+})
+
+test_that("displayed review revisions prevent stale single-row overwrites", {
+  curation_app_behavior_skip()
+  db <- tempfile(fileext = ".sqlite")
+  repository <- curation_review_repository_sqlite(db)
+  on.exit(curation_app_behavior_cleanup_db(db, repository), add = TRUE)
+  context <- curation_app_behavior_context(
+    "alice",
+    repository,
+    curation_app_behavior_artifacts(),
+    records = curation_app_behavior_records()[1:2, , drop = FALSE]
+  )
+  actor <- curation_actor("alice", roles = "reviewer")
+  key <- curation_review_key("nl", "shared", "alice")
+  original <- data.frame(
+    country = "nl", document_id = "shared", reviewer_id = "alice",
+    decision = "keep", source = "browse", stringsAsFactors = FALSE
+  )
+  expect_identical(
+    curation_review_upsert(repository, context$config$identity, original, actor, 0L)$revision,
+    1L
+  )
+
+  shiny::testServer(curation_app_behavior_server(context), {
+    curation_app_behavior_prime(
+      session,
+      "row_decision",
+      list(
+        id = "prime", country = "nl", decision = "keep", source = "browse",
+        revision = 0L, nonce = 0L
+      )
+    )
+    curation_app_behavior_pulse(
+      session,
+      "row_decision",
+      list(
+        id = "shared", country = "nl", decision = "drop", source = "browse",
+        revision = 1L, nonce = 1L
+      )
+    )
+    external <- data.frame(
+      country = "nl", document_id = "shared", reviewer_id = "alice",
+      decision = "unsure", source = "browse", stringsAsFactors = FALSE
+    )
+    expect_identical(
+      curation_review_upsert(repository, context$config$identity, external, actor, 2L)$revision,
+      3L
+    )
+    curation_app_behavior_pulse(
+      session,
+      "row_decision",
+      list(
+        id = "shared", country = "nl", decision = "keep", source = "browse",
+        revision = 2L, nonce = 2L
+      )
+    )
+  })
+
+  canonical <- curation_review_read(repository, context$config$identity, key, actor)
+  expect_identical(canonical$decision, "unsure")
+  expect_identical(canonical$revision, 3L)
+})
+
+test_that("browser mutations reject missing or stale rendered-row mappings", {
+  curation_app_behavior_skip()
+  db <- tempfile(fileext = ".sqlite")
+  repository <- curation_review_repository_sqlite(db)
+  on.exit(curation_app_behavior_cleanup_db(db, repository), add = TRUE)
+  artifacts <- curation_app_behavior_artifacts()
+  records <- curation_app_behavior_records()[1:2, , drop = FALSE]
+  context <- curation_app_behavior_context("alice", repository, artifacts, records = records)
+  actor <- curation_actor("alice", roles = "reviewer")
+  original <- data.frame(
+    country = "nl", document_id = "shared", reviewer_id = "alice",
+    decision = "keep", source = "browse", stringsAsFactors = FALSE
+  )
+  expect_identical(curation_review_upsert(repository, context$config$identity, original, actor, 0L)$revision, 1L)
+
+  shiny::testServer(curation_app_behavior_server(context), {
+    curation_app_behavior_prime(
+      session,
+      "row_decision",
+      list(id = "prime", country = "nl", decision = "keep", source = "browse", nonce = 0L)
+    )
+    curation_app_behavior_pulse(
+      session,
+      "row_decision",
+      list(id = "shared", country = "nl", decision = "drop", source = "browse", nonce = 1L)
+    )
+    current <- curation_review_list(repository, context$config$identity, actor = actor)
+    missing_revision <- curation_app_behavior_display_payload(records, current, "alice", "review_tbl")
+    missing_revision$rows <- list(list(country = "nl", document_id = "shared"))
+    session$setInputs(review_bulk_display = missing_revision)
+    session$flushReact()
+    curation_app_behavior_pulse(session, "mark_keep", 1L)
+
+    stale_render <- curation_app_behavior_display_payload(records, current, "alice", "review_tbl")
+    stale_render$render_id <- "render-from-another-table"
+    stale_render$rows <- Filter(
+      function(row) identical(as.character(row$country), "nl") && identical(as.character(row$document_id), "shared"),
+      stale_render$rows
+    )
+    session$setInputs(review_bulk_display = stale_render)
+    session$flushReact()
+    curation_app_behavior_pulse(session, "mark_keep", 2L)
+  })
+
+  unchanged <- curation_review_read(
+    repository, context$config$identity,
+    curation_review_key("nl", "shared", "alice"), actor
+  )
+  expect_identical(unchanged$decision, "keep")
+  expect_identical(unchanged$revision, 1L)
 })
 
 test_that("curation app renders an empty provider without model columns errors", {
@@ -758,12 +1007,12 @@ test_that("curation app forwards browse, random bulk, stepper, and clear revisio
     curation_app_behavior_prime(
       session,
       "row_decision",
-      list(id = "prime", country = "nl", decision = "keep", source = "browse", nonce = 0L)
+      list(id = "prime", country = "nl", decision = "keep", source = "browse", revision = 0L, nonce = 0L)
     )
     curation_app_behavior_pulse(
       session,
       "row_decision",
-      list(id = "shared", country = "nl", decision = "keep", source = "browse", nonce = 1L)
+      list(id = "shared", country = "nl", decision = "keep", source = "browse", revision = 0L, nonce = 1L)
     )
     browse <- curation_review_read(
       repository,
@@ -778,7 +1027,7 @@ test_that("curation app forwards browse, random bulk, stepper, and clear revisio
     curation_app_behavior_pulse(
       session,
       "row_decision",
-      list(id = "shared", country = "nl", decision = NULL, source = "browse", nonce = 3L)
+      list(id = "shared", country = "nl", decision = NULL, source = "browse", revision = 1L, nonce = 3L)
     )
     cleared <- curation_review_read(
       repository,
@@ -809,7 +1058,16 @@ test_that("curation app forwards browse, random bulk, stepper, and clear revisio
     expect_length(action_indices, 1L)
     action_index <- action_indices[[1L]]
 
-    session$setInputs(random_tbl__reactable__selected = action_index)
+    current_reviews <- curation_review_list(repository, config$identity, actor = actor)
+    displayed <- curation_app_behavior_display_payload(queue, current_reviews, "alice", "random_tbl")
+    displayed$rows <- Filter(
+      function(row) identical(as.character(row$country), "nl") && identical(as.character(row$document_id), "shared"),
+      displayed$rows
+    )
+    session$setInputs(
+      random_tbl__reactable__selected = action_index,
+      review_bulk_display = displayed
+    )
     session$flushReact()
     curation_app_behavior_pulse(session, "rnd_keep", 1L)
     bulk_key <- curation_review_key("nl", "shared", "alice")
@@ -822,7 +1080,14 @@ test_that("curation app forwards browse, random bulk, stepper, and clear revisio
         curation_app_behavior_pulse(session, "sr_next", step)
       }
     }
-    curation_app_behavior_pulse(session, "sr_keep", 1L)
+    curation_app_behavior_pulse(
+      session,
+      "sr_decision",
+      list(
+        country = "nl", document_id = "shared", reviewer = "alice",
+        decision = "keep", revision = 3L, nonce = 1L
+      )
+    )
     stepper <- curation_review_read(repository, config$identity, bulk_key, actor)
     expect_identical(stepper$source, "random")
     expect_identical(stepper$revision, 4L)
