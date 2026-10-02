@@ -259,7 +259,55 @@ over keep/drop/unsure decisions. `curation_load_model()` accepts legacy RDS
 selection-model artifacts and validates their topic/label vectors when a
 configuration is supplied.
 
-Model publication has no concrete backend in this package. Callers inject the
-C3 artifact store and use `curation_publish_model()`, which writes through
+Callers may inject a test-double artifact store and use
+`curation_publish_model()`, which writes through
 `curation_artifact_write_model()` and publishes only after a successful write;
 callback errors and explicit failed mutation results propagate to the caller.
+
+### Concrete C3 artifact persistence
+
+The first concrete artifact backend is `curation_artifact_store_sqlite()`.
+Callers provide an explicit `paths$root` (and may override `database`,
+`snapshots`, `samples`, or `models` with paths that remain below that root) and
+an optional bounded SQLite busy timeout. `DBI` and `RSQLite` remain `Suggests`; constructing the
+backend reports a classed missing-dependency error when either is unavailable.
+The backend uses the same local SQLite file for metadata, revision counters,
+and active-model references. It enables WAL and foreign keys, runs numbered
+migrations, and holds a write transaction only while registering one already
+written artifact or changing the active reference.
+
+Snapshots are immutable rows keyed by the complete project/corpus/config scope
+and a content-derived `version`. `curation_snapshot_version()` hashes a
+canonical snapshot payload together with a corpus-content fingerprint, the
+configuration fingerprint, the enrichment-schema version, and explicit filter
+coverage (requested countries and per-country row counts). The records helper
+attaches these values to snapshots it builds. A changed title, summary, scored
+field, configuration content, enrichment schema, or filter coverage therefore
+creates a new version even when native document IDs are unchanged. A read with
+`version = NULL` returns the newest matching version; it never assumes that the
+latest version is valid for a caller's current corpus without a matching
+version assertion.
+
+Samples are immutable RDS payloads keyed by scope, reviewer ID, and sample ID.
+The backend filters lists by the supplied reviewer and rejects reads by another
+reviewer unless the trusted actor has an administrative role. Country and
+document identity remains in the payload; native IDs are never used as a
+cross-country key.
+
+Models are written as opaque, uniquely named RDS files under the explicit model
+root. The payload remains an ordinary `planscanR_selection_model`, so existing
+`curation_load_model()` and `load_selection_model()` can read it. A short
+transaction registers the path and provenance only after an atomic file write;
+an orphan from a failed registration is invisible and cannot replace an active
+version. Model rows are immutable and carry structured provenance including the
+review snapshot fingerprint, snapshot version, configuration fingerprint,
+corpus snapshot/version, training parameters, creator actor, and creation
+time. A conflicting creator or non-zero expected revision is rejected.
+
+Publication validates the scoped model row and loads its RDS before a short
+compare-and-swap transaction updates the active reference. The expected active
+revision must match, so two independent publishers cannot overwrite one
+another. Missing, malformed, or cross-scope targets fail before the reference
+changes; the previous active model remains readable after every failed
+publication. Legacy `selection_model.rds` files are read as import inputs and
+are never replaced automatically.

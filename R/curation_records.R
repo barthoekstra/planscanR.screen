@@ -314,7 +314,15 @@ curation_records_snapshot <- function(provider, config, countries = NULL, refres
   } else {
     curation_records_read(provider, config$corpus_id, countries = countries)
   }
-  curation_enrich_records(records, config)
+  raw_fingerprint <- curation_artifact_content_fingerprint(records)
+  enriched <- curation_enrich_records(records, config)
+  attr(enriched, "curation_snapshot_metadata") <- list(
+    corpus_fingerprint = raw_fingerprint,
+    config_fingerprint = curation_config_fingerprint(config),
+    enrichment_schema = curation_artifact_enrichment_schema,
+    filter_coverage = curation_artifact_filter_coverage(records, countries)
+  )
+  enriched
 }
 
 # Compatibility name for callers that describe the operation as building a

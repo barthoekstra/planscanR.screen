@@ -20,6 +20,7 @@ Depends:
     R (>= 4.1)
 Imports:
     cli (>= 3.6.0),
+    codetools,
     dplyr (>= 1.1.0),
     planscanR,
     reticulate (>= 1.34),
