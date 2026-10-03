@@ -154,18 +154,16 @@ classify_assessments <- function(
       records[[score_cols[j]]][idx] <- sc[, j]
     }
     if (write_sidecar) {
+      owned_fields <- c(
+        "class_label",
+        "class_score",
+        "class_relevant",
+        "class_model",
+        score_cols
+      )
       for (i in idx) {
-        # Pass the record's existing download_status so record_to_sidecar
-        # rewrites the `files[]` array (attachment URLs + their section tags)
-        # instead of emptying it. Without this, classification would wipe the
-        # portal attachment URLs off the sidecar.
-        dl <- if ("download_status" %in% names(records)) {
-          records$download_status[[i]]
-        } else {
-          NULL
-        }
         tryCatch(
-          planscanR::write_record_sidecar(records[i, ], downloads = dl),
+          screen_update_sidecar_fields(records[i, ], owned_fields),
           error = function(e) {
             warn_partial(
               "Could not write sidecar for {.val {records$document_id[i]}}: {conditionMessage(e)}"

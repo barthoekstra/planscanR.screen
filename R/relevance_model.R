@@ -233,9 +233,11 @@ slugify_topic <- function(s) {
 #' # Multiple topics in one pass — column names will be relevance_score_wind etc.
 #' score_records(
 #'   recs,
-#'   c(wind  = "wind energy",
+#'   c(
+#'     wind = "wind energy",
 #'     solar = "solar energy",
-#'     res   = "regional energy transition strategy and planning"),
+#'     res = "regional energy transition strategy and planning"
+#'   ),
 #'   em
 #' )
 #' }
@@ -371,9 +373,11 @@ mark_warned_language <- function(key) {
 #' recs <- index_cache("/path/to/cache")
 #' scored <- score_assessments(
 #'   recs,
-#'   c(wind  = "wind energy",
+#'   c(
+#'     wind = "wind energy",
 #'     solar = "solar energy",
-#'     res   = "regional energy transition strategy and planning"),
+#'     res = "regional energy transition strategy and planning"
+#'   ),
 #'   write_sidecar = TRUE
 #' )
 #' }
@@ -381,11 +385,13 @@ score_assessments <- function(records, topic, model = NULL, write_sidecar = FALS
   if (is.null(model)) {
     model <- embedding_model_minilm()
   }
-  out <- score_records(records, topic = topic, model = model)
+  topics <- normalise_topics(topic)
+  out <- score_records(records, topic = topics, model = model)
   if (write_sidecar && nrow(out) > 0L) {
+    owned_fields <- c(paste0("relevance_score_", names(topics)), "relevance_model")
     for (i in seq_len(nrow(out))) {
       tryCatch(
-        planscanR::write_record_sidecar(out[i, ]),
+        screen_update_sidecar_fields(out[i, ], owned_fields),
         error = function(e) {
           warn_partial(
             "Could not write sidecar for {.val {out$document_id[i]}}: {conditionMessage(e)}"
