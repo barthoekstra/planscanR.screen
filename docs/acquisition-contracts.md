@@ -156,3 +156,42 @@ is retained for audit, and `acquisition_campaign_explain()` reports the current
 rule, energy evidence, queue state, and whether a reprioritization changed a
 pending job. Reprioritization is an operational queue decision and does not
 rewrite the immutable selection submission.
+## Storage administration and relocation contract (ACQ-2c)
+
+The leaf `planscanR` package owns physical storage. Its exported
+`storage_root_validate()`, `storage_path()`, `storage_relative_path()`,
+`storage_capacity()`, `storage_free_bytes()`, and
+`storage_transfer_cap_bytes()` functions accept canonical absolute roots and
+portable relative locations. Relative locations reject absolute paths, dot
+segments, and symlink escapes below a registered root. The screen package
+persists only the root ID and relative path; it does not persist
+machine-specific absolute file locations in file claims.
+
+The screen package keeps storage policy in a separate numbered ledger after
+the catalog migrations. `acquisition_storage_roots` records validated roots,
+purpose, and fixed or fractional total-volume headroom. Settings are append-only
+versions in `acquisition_settings_versions`; storage administration requires an
+authenticated actor with the explicit `admin` role, and secret-like setting
+keys are rejected. The built-in cache root is registered when the leaf resolver
+is available, with a default estimate bounded by the leaf transfer-size cap for
+transfers whose size is not known before download.
+
+Download and storage-migration jobs carry an optional byte estimate. During the
+same short claim transaction, the queue reads total and free bytes from the
+leaf, subtracts all held reservations and the new estimate, and refuses the
+claim when the configured headroom would be crossed. Download reservations and
+the downloader share the leaf transfer-size cap. The claimed root ID and
+validated path stay bound to that lease. Successful,
+retryable, failed, and expired attempts release their held reservation. SQLite
+transaction serialization makes two worker connections observe the same
+reservation ledger.
+
+`acquisition_storage_enqueue_relocation()` records source and target roots in
+`acquisition_storage_relocations` and enqueues a distinct `migrate_storage`
+job for each source/target pair, targeted at the target root. It never moves
+files inline. A deployment may supply a worker handler to copy, verify, and
+switch references; the default handler blocks until that explicit migration
+policy is configured.
+
+The existing receipt-only reconciliation helpers retain their `planscan-cache`
+recovery root behavior; custom-root recovery is deferred to ACQ-5a.

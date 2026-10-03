@@ -79,6 +79,9 @@ acquisition_queue_url_host <- function(url) {
 }
 
 acquisition_queue_target_url_connection <- function(conn, target_type, target_ref_id) {
+  if (identical(target_type, "storage_root")) {
+    return(NA_character_)
+  }
   if (identical(target_type, "source")) {
     row <- acquisition_catalog_one(conn, "SELECT source_url AS url FROM acquisition_sources WHERE source_ref_id = ?", list(target_ref_id))
   } else if (identical(target_type, "document")) {
@@ -106,12 +109,14 @@ acquisition_queue_existing_target <- function(conn, target_type, target_ref_id) 
     source = "acquisition_sources",
     document = "acquisition_documents",
     file = "acquisition_files",
+    storage_root = "acquisition_storage_roots",
     acquisition_queue_abort("Unsupported queue target type.")
   )
   column <- switch(target_type,
     source = "source_ref_id",
     document = "document_ref_id",
-    file = "file_ref_id"
+    file = "file_ref_id",
+    storage_root = "root_id"
   )
   !is.null(acquisition_catalog_one(
     conn,
@@ -208,6 +213,10 @@ acquisition_queue_recover_expired_connection <- function(conn, now) {
         as.character(row$job_id[[1L]])
       )
     )
+    if (exists("acquisition_storage_release_connection", mode = "function")) {
+      acquisition_storage_release_connection(conn, row$job_id[[1L]])
+      acquisition_storage_mark_complete_connection(conn, row$job_id[[1L]], next_state)
+    }
   }
   length(seq_len(nrow(expired)))
 }
@@ -221,15 +230,33 @@ acquisition_queue_enqueue_connection <- function(
   priority = 0L,
   max_attempts = 3L,
   delay_seconds = 0,
-  idempotency_key = NULL
+  idempotency_key = NULL,
+  estimated_bytes = NULL
 ) {
   kind <- acquisition_catalog_scalar_character(kind, "kind")
   target_type <- acquisition_catalog_scalar_character(target_type, "target_type")
   target_ref_id <- acquisition_catalog_scalar_character(target_ref_id, "target_ref_id")
+  if (!kind %in% c("discover", "download", "migrate_storage")) {
+    acquisition_queue_abort("Unsupported queue kind.")
+  }
+  if (!target_type %in% c("source", "document", "file", "storage_root")) {
+    acquisition_queue_abort("Unsupported queue target type.")
+  }
   host <- acquisition_queue_normalize_host(host)
   priority <- acquisition_catalog_scalar_integer(priority, "priority", lower = -1000000L, upper = 1000000L)
   max_attempts <- acquisition_catalog_scalar_integer(max_attempts, "max_attempts", lower = 1L, upper = 1000L)
   delay_seconds <- acquisition_queue_nonnegative_seconds(delay_seconds, "delay_seconds")
+  estimated_bytes <- if (is.null(estimated_bytes)) {
+    0
+  } else if (exists("acquisition_storage_bytes", mode = "function")) {
+    acquisition_storage_bytes(estimated_bytes, "estimated_bytes")
+  } else {
+    if (!is.numeric(estimated_bytes) || length(estimated_bytes) != 1L ||
+      is.na(estimated_bytes) || !is.finite(estimated_bytes) || estimated_bytes < 0) {
+      acquisition_queue_abort("{.arg estimated_bytes} must be a non-negative byte count.")
+    }
+    as.numeric(estimated_bytes)
+  }
   idempotency_key <- if (is.null(idempotency_key)) {
     paste(kind, target_type, target_ref_id, sep = ":")
   } else {
@@ -262,11 +289,22 @@ acquisition_queue_enqueue_connection <- function(
       class = "planscanR_error_acquisition_queue_conflict"
     )
   }
-  existing <- acquisition_catalog_one(
-    conn,
-    "SELECT * FROM acquisition_jobs WHERE kind = ? AND target_type = ? AND target_ref_id = ?",
-    list(kind, target_type, target_ref_id)
-  )
+  if (!is.null(existing_by_key)) {
+    return(list(
+      job_id = as.character(existing_by_key$job_id[[1L]]),
+      idempotency_key = as.character(existing_by_key$idempotency_key[[1L]]),
+      status = "replayed"
+    ))
+  }
+  existing <- if (kind %in% c("discover", "download")) {
+    acquisition_catalog_one(
+      conn,
+      "SELECT * FROM acquisition_jobs WHERE kind = ? AND target_type = ? AND target_ref_id = ?",
+      list(kind, target_type, target_ref_id)
+    )
+  } else {
+    NULL
+  }
   if (!is.null(existing)) {
     return(list(
       job_id = as.character(existing$job_id[[1L]]),
@@ -281,7 +319,7 @@ acquisition_queue_enqueue_connection <- function(
     paste(
       "INSERT INTO acquisition_jobs (job_id, kind, target_type, target_ref_id,",
       "idempotency_key, host, priority, state, available_at, attempt_count,",
-      "max_attempts, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, 0, ?, ?, ?)"
+      "max_attempts, created_at, updated_at, estimated_bytes) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, 0, ?, ?, ?, ?)"
     ),
     params = list(
       job_id,
@@ -294,7 +332,8 @@ acquisition_queue_enqueue_connection <- function(
       acquisition_queue_time_after(delay_seconds),
       max_attempts,
       now,
-      now
+      now,
+      estimated_bytes
     )
   )
   acquisition_queue_insert_missing_host_limits(conn, now)
@@ -303,19 +342,22 @@ acquisition_queue_enqueue_connection <- function(
 
 #' Enqueue one durable acquisition job.
 #'
-#' Repeating the same `(kind, target_type, target_ref_id)` is idempotent.  The
-#' target must already be an identity in the acquisition catalog.
+#' Repeating the same target is idempotent for discovery and download jobs;
+#' relocation jobs use their source/target idempotency key. The target must
+#' already be an identity in the acquisition catalog.
 #'
 #' @param catalog A catalog from [acquisition_catalog_open()].
-#' @param kind `discover` or `download`.
-#' @param target_type `source`, `document`, or `file`.
-#' @param target_ref_id Persisted source, document, or file reference ID.
+#' @param kind `discover`, `download`, or `migrate_storage`.
+#' @param target_type `source`, `document`, `file`, or `storage_root`.
+#' @param target_ref_id Persisted source, document, file, or storage-root ID.
 #' @param host Optional shared host throttle key.
 #' @param priority Integer priority; larger values claim first.
 #' @param max_attempts Bounded number of worker attempts.
 #' @param delay_seconds Delay before the first claim.
 #' @param idempotency_key Optional caller key.  The persisted target identity
 #'   remains unique even when a caller key is supplied.
+#' @param estimated_bytes Optional transfer-size estimate used by storage
+#'   reservations.
 #' @return A list containing `job_id` and `status`.
 #' @export
 acquisition_queue_enqueue <- function(
@@ -327,16 +369,17 @@ acquisition_queue_enqueue <- function(
   priority = 0L,
   max_attempts = 3L,
   delay_seconds = 0,
-  idempotency_key = NULL
+  idempotency_key = NULL,
+  estimated_bytes = NULL
 ) {
   kind <- acquisition_catalog_scalar_character(kind, "kind")
   target_type <- acquisition_catalog_scalar_character(target_type, "target_type")
   target_ref_id <- acquisition_catalog_scalar_character(target_ref_id, "target_ref_id")
-  if (!kind %in% c("discover", "download")) {
-    acquisition_queue_abort("{.arg kind} must be `discover` or `download`.")
+  if (!kind %in% c("discover", "download", "migrate_storage")) {
+    acquisition_queue_abort("{.arg kind} must be `discover`, `download`, or `migrate_storage`.")
   }
-  if (!target_type %in% c("source", "document", "file")) {
-    acquisition_queue_abort("{.arg target_type} must be `source`, `document`, or `file`.")
+  if (!target_type %in% c("source", "document", "file", "storage_root")) {
+    acquisition_queue_abort("{.arg target_type} must be `source`, `document`, `file`, or `storage_root`.")
   }
   priority <- acquisition_catalog_scalar_integer(priority, "priority", lower = -1000000L, upper = 1000000L)
   max_attempts <- acquisition_catalog_scalar_integer(max_attempts, "max_attempts", lower = 1L, upper = 1000L)
@@ -351,7 +394,8 @@ acquisition_queue_enqueue <- function(
       priority,
       max_attempts,
       delay_seconds,
-      idempotency_key
+      idempotency_key,
+      estimated_bytes
     )
   })
 }
@@ -475,6 +519,22 @@ acquisition_queue_claim <- function(catalog, worker_id, lease_seconds = 300L) {
     if (is.null(candidate)) {
       return(list(ok = FALSE, status = "empty"))
     }
+    if (exists("acquisition_storage_try_reserve_connection", mode = "function")) {
+      reservation <- acquisition_storage_try_reserve_connection(conn, candidate)
+      if (!isTRUE(reservation$ok)) {
+        return(list(
+          ok = FALSE,
+          status = "storage-reserve-unavailable",
+          reason = reservation$reason %||% "storage-reserve-unavailable",
+          root_id = reservation$root_id %||% NA_character_
+        ))
+      }
+      if (!is.null(reservation$root_id)) {
+        candidate$storage_root_id <- as.character(reservation$root_id)
+        candidate$storage_root_path <- as.character(reservation$root_path)
+        candidate$storage_reservation_bytes <- as.numeric(reservation$bytes)
+      }
+    }
     attempt_no <- as.integer(candidate$attempt_count[[1L]]) + 1L
     token <- paste0(
       "attempt-",
@@ -507,6 +567,9 @@ acquisition_queue_claim <- function(catalog, worker_id, lease_seconds = 300L) {
       ),
       params = list(attempt_no, token, worker_id, expires, now, job_id)
     )
+    if (exists("acquisition_storage_mark_running_connection", mode = "function")) {
+      acquisition_storage_mark_running_connection(conn, job_id)
+    }
     acquisition_queue_sync_host_counts(conn, now)
     out <- as.list(candidate[1L, , drop = FALSE])
     out <- lapply(out, function(value) if (length(value) == 0L) NA else value[[1L]])
@@ -856,6 +919,10 @@ acquisition_queue_complete <- function(
         job_id
       )
     )
+    if (exists("acquisition_storage_release_connection", mode = "function")) {
+      acquisition_storage_release_connection(conn, job_id)
+      acquisition_storage_mark_complete_connection(conn, job_id, next_state)
+    }
     if (!is.null(cooldown_seconds) && !is.na(job$host[[1L]])) {
       cooldown_until <- acquisition_queue_time_after(cooldown_seconds)
       DBI::dbExecute(
@@ -1529,7 +1596,26 @@ acquisition_queue_default_download <- function(
       return(list(status = "retryable", error_category = "lease-stale", error_message = "The download lease expired before publication."))
     }
   }
-  cache_root <- planscanR::cache_dir_default()
+  storage_root <- if (!is.null(job$storage_root_path) && length(job$storage_root_path) == 1L &&
+    !is.na(job$storage_root_path)) {
+    list(
+      root_id = as.character(job$storage_root_id),
+      root_path = as.character(job$storage_root_path)
+    )
+  } else if (exists("acquisition_storage_root_for_job_connection", mode = "function")) {
+    acquisition_storage_root_for_job_connection(acquisition_catalog_connection(catalog), job)
+  } else {
+    NULL
+  }
+  if (exists("acquisition_storage_root_for_job_connection", mode = "function") && is.null(storage_root)) {
+    return(list(status = "blocked", error_category = "unknown-storage-root", error_message = "No active acquisition storage root is configured."))
+  }
+  cache_root <- if (is.null(storage_root)) {
+    planscanR::cache_dir_default()
+  } else {
+    planscanR::storage_root_validate(as.character(storage_root$root_path[[1L]]), create = TRUE, writable = TRUE)
+  }
+  root_id <- if (is.null(storage_root)) "planscan-cache" else as.character(storage_root$root_id[[1L]])
   cache_document_id <- acquisition_queue_cache_document_id(row$source_ref_id[[1L]], document_ref_id)
   destination <- planscanR::cache_path(url, country, cache_document_id, cache_dir = cache_root)
   lock <- filelock::lock(paste0(destination, ".lock"), timeout = as.integer(lock_timeout * 1000))
@@ -1543,13 +1629,49 @@ acquisition_queue_default_download <- function(
       return(list(status = "retryable", error_category = "lease-stale", error_message = "The download lease expired while waiting for publication."))
     }
   }
-  result <- planscanR::download_to_cache(
+  reservation_cap_bytes <- if (!is.null(job$storage_reservation_bytes) &&
+    length(job$storage_reservation_bytes) == 1L &&
+    is.finite(as.numeric(job$storage_reservation_bytes)) &&
+    as.numeric(job$storage_reservation_bytes) > 0) {
+    as.numeric(job$storage_reservation_bytes)
+  } else {
+    Inf
+  }
+  configured_cap_bytes <- if (exists("acquisition_storage_transfer_cap_bytes", mode = "function")) {
+    tryCatch(
+      acquisition_storage_transfer_cap_bytes(),
+      error = function(error) {
+        if (is.finite(reservation_cap_bytes)) reservation_cap_bytes else stop(error)
+      }
+    )
+  } else {
+    max_file_size_bytes <- getOption("planscanR.max_file_size_mb", 50)
+    if (is.null(max_file_size_bytes) || is.infinite(max_file_size_bytes) || max_file_size_bytes <= 0) {
+      Inf
+    } else {
+      as.numeric(max_file_size_bytes) * 1024^2
+    }
+  }
+  transfer_cap_bytes <- min(as.numeric(configured_cap_bytes), reservation_cap_bytes)
+  if (!is.finite(transfer_cap_bytes) || transfer_cap_bytes <= 0) {
+    return(list(status = "blocked", error_category = "missing-transfer-cap", error_message = "A finite transfer cap bound to the storage reservation is required."))
+  }
+  max_file_size_mb <- transfer_cap_bytes / (1024^2)
+  download_fn <- planscanR::download_to_cache
+  download_args <- list(
     url,
     country,
     cache_document_id,
     cache_dir = cache_root,
     overwrite = FALSE
   )
+  # Keep the production downloader's hard cap while allowing older injected
+  # offline handlers that predate the cap argument to remain valid.
+  if ("..." %in% names(formals(download_fn)) ||
+    "max_file_size_mb" %in% names(formals(download_fn))) {
+    download_args$max_file_size_mb <- max_file_size_mb
+  }
+  result <- do.call(download_fn, download_args)
   if (!is.data.frame(result) || nrow(result) == 0L) {
     return(list(status = "retryable", error_category = "empty-download-result", error_message = "The downloader returned no result."))
   }
@@ -1589,8 +1711,8 @@ acquisition_queue_default_download <- function(
     publication <- list(
       status = "succeeded",
       document_ref_id = document_ref_id,
-      root_id = "planscan-cache",
-      relative_path = acquisition_queue_relative_path(local_path, cache_root),
+      root_id = root_id,
+      relative_path = planscanR::storage_relative_path(local_path, cache_root),
       local_path = local_path,
       size_bytes = size_bytes,
       sha256 = sha256,
@@ -1710,6 +1832,14 @@ acquisition_queue_default_discover <- function(job, catalog) {
   result
 }
 
+acquisition_queue_default_migrate_storage <- function(job, catalog) {
+  list(
+    status = "blocked",
+    error_category = "storage-relocation-handler-required",
+    error_message = "Storage relocation is durable and queued; configure an authorized migration handler to copy and verify files."
+  )
+}
+
 #' Run supervised acquisition workers outside Shiny.
 #'
 #' A worker claims one job, performs handler work outside the SQLite
@@ -1721,8 +1851,8 @@ acquisition_queue_default_discover <- function(job, catalog) {
 #' @param worker_id Stable process identity.
 #' @param max_jobs Maximum number of jobs to process; defaults to one.
 #' @param lease_seconds Lease duration for each claim.
-#' @param handlers Optional named list with `discover` and/or `download`
-#'   functions.
+#' @param handlers Optional named list with `discover`, `download`, and/or
+#'   `migrate_storage` functions.
 #' @param poll_seconds Optional delay after an empty claim before returning.
 #' @param lock_timeout Download publication lock timeout in seconds.
 #' @return A list of worker outcomes, one per claimed job.
@@ -1754,7 +1884,8 @@ acquisition_worker_run <- function(
   }
   defaults <- list(
     discover = acquisition_queue_default_discover,
-    download = function(job, catalog) acquisition_queue_default_download(job, catalog, lock_timeout = lock_timeout)
+    download = function(job, catalog) acquisition_queue_default_download(job, catalog, lock_timeout = lock_timeout),
+    migrate_storage = acquisition_queue_default_migrate_storage
   )
   if (!is.null(handlers)) {
     if (!is.list(handlers)) acquisition_queue_abort("{.arg handlers} must be a named list of functions.")

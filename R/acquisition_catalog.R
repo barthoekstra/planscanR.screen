@@ -570,6 +570,12 @@ acquisition_catalog_open <- function(path, busy_timeout = 5000L) {
     )
   }
   acquisition_catalog_migrate(conn, busy_timeout)
+  # ACQ-2c keeps storage metadata in its own migration ledger so later
+  # campaign/catalog migrations can advance independently.  The function is
+  # defined by acquisition_storage.R and is called only after catalog setup.
+  if (exists("acquisition_storage_migrate", mode = "function")) {
+    acquisition_storage_migrate(conn, busy_timeout = busy_timeout)
+  }
   catalog <- structure(
     list(
       conn = conn,
