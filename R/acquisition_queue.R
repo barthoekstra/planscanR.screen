@@ -500,6 +500,11 @@ acquisition_queue_recover <- function(catalog) {
 acquisition_queue_claim <- function(catalog, worker_id, lease_seconds = 300L) {
   worker_id <- acquisition_catalog_scalar_character(worker_id, "worker_id")
   lease_seconds <- acquisition_catalog_scalar_integer(lease_seconds, "lease_seconds", lower = 1L, upper = 604800L)
+  # ACQ-2b controls are persisted in the same catalog.  Creating the small
+  # control schema here keeps a fresh worker compatible with a catalog that
+  # has not yet been opened by the dashboard.
+  controls_available <- exists("acquisition_controls_ensure_schema", mode = "function", inherits = TRUE)
+  if (controls_available) acquisition_controls_ensure_schema(catalog)
   acquisition_catalog_transaction(catalog, function(conn) {
     now <- acquisition_catalog_now()
     acquisition_queue_insert_missing_host_limits(conn, now)
@@ -511,6 +516,7 @@ acquisition_queue_claim <- function(catalog, worker_id, lease_seconds = 300L) {
         "SELECT j.* FROM acquisition_jobs j LEFT JOIN acquisition_host_limits h ON h.host = j.host",
         "WHERE j.state IN ('queued', 'retry_wait') AND j.available_at <= ?",
         "AND j.attempt_count < j.max_attempts",
+        "AND ", if (controls_available) acquisition_controls_pause_guard_sql() else "1 = 1",
         "AND (j.host IS NULL OR ((h.cooldown_until IS NULL OR h.cooldown_until <= ?) AND h.active_count < h.max_concurrency))",
         "ORDER BY j.priority DESC, j.available_at, j.created_at, j.job_id LIMIT 1"
       ),
@@ -768,6 +774,14 @@ acquisition_queue_complete <- function(
     if (is.null(job)) {
       return(list(ok = FALSE, status = "stale", job_id = job_id))
     }
+    controls_available <- exists("acquisition_controls_ensure_schema_connection", mode = "function", inherits = TRUE)
+    if (controls_available) acquisition_controls_ensure_schema_connection(conn)
+    cancel_requested <- if (controls_available) acquisition_controls_cancel_requested_connection(conn, job) else FALSE
+    effective_status <- if (isTRUE(cancel_requested) && status %in% c("succeeded", "retryable", "blocked", "failed")) {
+      "cancelled"
+    } else {
+      status
+    }
     registered_document_ids <- character(0)
     if (identical(status, "succeeded") && identical(as.character(job$kind[[1L]]), "discover")) {
       registered_document_ids <- acquisition_queue_register_result_documents(conn, job, result)
@@ -868,9 +882,9 @@ acquisition_queue_complete <- function(
     }
     attempt_no <- as.integer(job$attempt_count[[1L]])
     retry_at <- NA_character_
-    next_state <- status
+    next_state <- effective_status
     completed_at <- now
-    if (identical(status, "retryable")) {
+    if (identical(status, "retryable") && !isTRUE(cancel_requested)) {
       exhausted <- attempt_no >= as.integer(job$max_attempts[[1L]])
       if (isTRUE(exhausted)) {
         next_state <- "failed"
@@ -889,7 +903,7 @@ acquisition_queue_complete <- function(
         "WHERE job_id = ? AND lease_token = ? AND outcome = 'running'"
       ),
       params = list(
-        status,
+        effective_status,
         now,
         error_category,
         error_message,
@@ -938,7 +952,7 @@ acquisition_queue_complete <- function(
     acquisition_queue_sync_host_counts(conn, now)
     list(
       ok = TRUE,
-      status = status,
+      status = effective_status,
       job_state = next_state,
       job_id = job_id,
       attempt_no = attempt_no,

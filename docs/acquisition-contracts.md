@@ -195,3 +195,47 @@ policy is configured.
 
 The existing receipt-only reconciliation helpers retain their `planscan-cache`
 recovery root behavior; custom-root recovery is deferred to ACQ-5a.
+
+## Acquisition dashboard and controls (ACQ-2b)
+
+`acquisition_dashboard_summary()` and the queue views read the acquisition
+SQLite catalog directly. Refreshes use bounded SQL aggregates and paginated
+project, file, and job detail queries; they never scan sidecars or take
+ownership of a worker. Project, file, and stage counts are derived from
+persisted source, document, file, and job rows. A source with a successful
+discovery and zero documents is reported as `successful_empty`; a source with
+documents is `complete` only when every in-scope document has a verified file,
+`pending` while discovered documents await download, `partial` when some have
+a file claim, and `blocked` when a document download is blocked or exhausted.
+A successful non-empty discovery with no download work is `discovered`. The
+authoritative `discovered_count` counts successful non-empty discovery even
+while downloads are pending. Missing, retryable, or failed inventory is
+reported with its explicit unknown/error state. Unknown totals remain visible
+and are never presented as zero. File totals use only verified registered file
+claims, while the dashboard reports unknown byte totals when no trustworthy
+size is available.
+
+The dashboard exposes active worker IDs, lease expiry, and the latest attempt
+heartbeat from the queue database. Progress is a database projection of job
+and attempt state (including completed and unknown work); ETA is omitted when
+the catalog cannot support a measurement. A small Shiny module may refresh
+these projections with `reactivePoll()` or a timer, but it does not start,
+stop, supervise, or join workers. Closing a browser session therefore leaves
+independent workers and their leases untouched.
+
+The queue UI exposes campaign, country, energy, state, portal, and text
+filters with server-side page navigation, so a control target outside the
+first page remains addressable. Administrative queue actions are server-side
+functions, not editable actor fields in the UI. Each action resolves a trusted
+`planscanR_curation_actor_resolver` and requires the `admin` role. The catalog
+records the authenticated actor, action, target, prior state, resulting state,
+reason, and timestamp in an append-only audit table. Pause prevents new claims
+for the selected campaign or job while already-running work is allowed to
+finish. Resume removes that claim guard. Retry only requeues an eligible
+failed/blocked/cancelled job after preserving its prior attempts; it does not
+replace an active lease or reset its attempt audit. Cancel marks pending work
+cancelled and requests a fenced safe stop for running work. A running worker
+may publish a verified receipt before its completion is recorded as cancelled;
+the dashboard retains that verified file claim. Queue claim and completion
+guards enforce these states in the database, so a forged browser request
+cannot mutate identity or bypass a lease.
