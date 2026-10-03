@@ -239,3 +239,38 @@ may publish a verified receipt before its completion is recorded as cancelled;
 the dashboard retains that verified file claim. Queue claim and completion
 guards enforce these states in the database, so a forged browser request
 cannot mutate identity or bypass a lease.
+
+## Supervised acquisition deployment contract (ACQ-3a)
+
+The acquisition deployment is additive to the curation deployment. It uses a
+dedicated SQLite catalog under the service-owned acquisition state root and
+never opens, migrates, or writes the review database, authentication database,
+planscanR cache, or workspace R library. Catalog provisioning is idempotent and
+must leave the existing curation service and its state available. Catalog,
+WAL/SHM files, worker logs, and deployment configuration stay under that
+explicit state root; credentials, session cookies, TOTP material, and
+credential-bearing URLs are excluded from logs and shared evidence.
+
+The worker entry point supports a supervised idle mode. Each worker is an
+independent fresh R process outside Shiny and claims through the existing
+SQLite lease protocol. It may sleep between empty claims, but a browser or
+dashboard session never owns its lifecycle. The supervisor restarts a worker
+after an unexpected exit; an expired lease is recovered by the next claim and
+the job remains retryable. The initial single-host pool contains two workers
+and may be expanded to four only after measurement.
+
+Worker units carry explicit per-process CPU and memory limits and expose those
+limits through systemd cgroup properties. ACQ-3a evidence must measure the
+actual worker RSS and cgroup CPU/memory observations using an isolated fixture
+catalog and injected handler; a unit template or nominal limit alone is not
+evidence. The cap applies to acquisition workers only and must leave the live
+curation service uncapped and available.
+
+The dashboard runs as a separate Shiny process against the acquisition catalog
+and resolves actors with the existing server-side auth SQLite session resolver.
+The public `/app/acquisition/` route is protected by the same nginx auth
+subrequest as `/app/`, uses the existing `/app` cookie path, strips client
+identity/role headers, and forwards no credentials. Reviewer access remains
+read-only; queue controls still require the authenticated `admin` role through
+the existing actor resolver. The route must preserve the curation app at
+`/app/` and may not duplicate or migrate review persistence.

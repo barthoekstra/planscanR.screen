@@ -758,6 +758,7 @@ acquisition_queue_complete <- function(
   if (is.null(cooldown_seconds)) cooldown_seconds <- result$cooldown_seconds
   error_category <- acquisition_queue_optional_text(error_category, "error_category")
   error_message <- acquisition_queue_optional_text(error_message, "error_message")
+  if (!is.na(error_message)) error_message <- acquisition_queue_redact_sensitive(error_message)
   retry_after_seconds <- if (is.null(retry_after_seconds)) NULL else acquisition_queue_nonnegative_seconds(retry_after_seconds, "retry_after_seconds")
   cooldown_seconds <- if (is.null(cooldown_seconds)) NULL else acquisition_queue_nonnegative_seconds(cooldown_seconds, "cooldown_seconds")
 
@@ -962,6 +963,35 @@ acquisition_queue_complete <- function(
   })
 }
 
+acquisition_queue_redact_sensitive <- function(value) {
+  if (is.null(value) || length(value) == 0L || is.na(value[[1L]])) {
+    return(value)
+  }
+  value <- as.character(value[[1L]])
+  # Error text is durable catalog metadata and may be copied to private
+  # service logs or evidence. Keep the diagnostic shape while removing the
+  # credential-bearing parts that handlers or HTTP clients may include.
+  value <- gsub(
+    "(?i)(https?://)[^[:space:]/@]+:[^[:space:]/@]+@",
+    "\\1[REDACTED]@",
+    value,
+    perl = TRUE
+  )
+  value <- gsub(
+    "(?i)([?&](?:access[_-]?token|api[_-]?key|auth(?:orization)?|password|passwd|secret|session|token|otp)=)[^&#[:space:]]+",
+    "\\1[REDACTED]",
+    value,
+    perl = TRUE
+  )
+  value <- gsub(
+    "(?im)((?:authorization|cookie|x-api-key)[[:space:]]*[:=][[:space:]]*)[^\\r\\n]*",
+    "\\1[REDACTED]",
+    value,
+    perl = TRUE
+  )
+  value
+}
+
 acquisition_queue_normalise_handler_result <- function(value) {
   if (is.null(value)) {
     return(list(status = "failed", error_category = "empty-handler-result", error_message = "The worker handler returned NULL."))
@@ -980,6 +1010,7 @@ acquisition_queue_normalise_handler_result <- function(value) {
   if (status %in% c("downloaded", "exists", "empty", "successful-empty", "ok")) status <- "succeeded"
   if (!status %in% c("succeeded", "retryable", "blocked", "cancelled")) status <- "failed"
   value$status <- status
+  if (!is.null(value$error_message)) value$error_message <- acquisition_queue_redact_sensitive(value$error_message)
   value
 }
 
