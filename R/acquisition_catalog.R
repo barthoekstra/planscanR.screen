@@ -2,7 +2,7 @@
 # repository and from the planscanR cache.  This file contains only the small
 # catalog/import seam needed by later queue work; queue claims belong to ACQ-1b.
 
-acquisition_catalog_schema_version <- 2L
+acquisition_catalog_schema_version <- 3L
 
 acquisition_catalog_abort <- function(
   message,
@@ -287,6 +287,90 @@ acquisition_catalog_apply_migration <- function(conn, version) {
     DBI::dbExecute(
       conn,
       "CREATE INDEX IF NOT EXISTS acquisition_selections_model_idx ON acquisition_selections(model_id)"
+    )
+  } else if (identical(version, 3L)) {
+    DBI::dbExecute(
+      conn,
+      paste(
+        "CREATE TABLE IF NOT EXISTS acquisition_jobs (",
+        "job_id TEXT PRIMARY KEY,",
+        "kind TEXT NOT NULL CHECK (kind IN ('discover', 'download')),",
+        "target_type TEXT NOT NULL CHECK (target_type IN ('source', 'document', 'file')),",
+        "target_ref_id TEXT NOT NULL,",
+        "idempotency_key TEXT NOT NULL UNIQUE,",
+        "host TEXT,",
+        "priority INTEGER NOT NULL DEFAULT 0,",
+        "state TEXT NOT NULL CHECK (state IN ('queued', 'running', 'retry_wait', 'blocked', 'succeeded', 'failed', 'cancelled')),",
+        "available_at TEXT NOT NULL,",
+        "attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),",
+        "max_attempts INTEGER NOT NULL CHECK (max_attempts >= 1),",
+        "lease_token TEXT,",
+        "worker_id TEXT,",
+        "lease_expires_at TEXT,",
+        "last_error_category TEXT,",
+        "last_error TEXT,",
+        "completed_at TEXT,",
+        "created_at TEXT NOT NULL,",
+        "updated_at TEXT NOT NULL,",
+        "UNIQUE (kind, target_type, target_ref_id)",
+        ")"
+      )
+    )
+    DBI::dbExecute(
+      conn,
+      paste(
+        "CREATE INDEX IF NOT EXISTS acquisition_jobs_claim_idx",
+        "ON acquisition_jobs (state, available_at, priority, created_at, job_id)"
+      )
+    )
+    DBI::dbExecute(
+      conn,
+      paste(
+        "CREATE INDEX IF NOT EXISTS acquisition_jobs_host_idx",
+        "ON acquisition_jobs (host, state, lease_expires_at)"
+      )
+    )
+    DBI::dbExecute(
+      conn,
+      paste(
+        "CREATE TABLE IF NOT EXISTS acquisition_job_attempts (",
+        "job_id TEXT NOT NULL,",
+        "attempt_no INTEGER NOT NULL CHECK (attempt_no >= 1),",
+        "lease_token TEXT NOT NULL UNIQUE,",
+        "worker_id TEXT NOT NULL,",
+        "host TEXT,",
+        "claimed_at TEXT NOT NULL,",
+        "lease_expires_at TEXT NOT NULL,",
+        "heartbeat_at TEXT NOT NULL,",
+        "finished_at TEXT,",
+        "outcome TEXT CHECK (outcome IN ('running', 'expired', 'succeeded', 'retryable', 'blocked', 'failed', 'cancelled')),",
+        "error_category TEXT,",
+        "error_message TEXT,",
+        "retry_at TEXT,",
+        "bytes INTEGER,",
+        "sha256 TEXT,",
+        "local_path TEXT,",
+        "result_blob TEXT,",
+        "PRIMARY KEY (job_id, attempt_no),",
+        "FOREIGN KEY (job_id) REFERENCES acquisition_jobs(job_id)",
+        ")"
+      )
+    )
+    DBI::dbExecute(
+      conn,
+      "CREATE INDEX IF NOT EXISTS acquisition_job_attempts_token_idx ON acquisition_job_attempts (lease_token)"
+    )
+    DBI::dbExecute(
+      conn,
+      paste(
+        "CREATE TABLE IF NOT EXISTS acquisition_host_limits (",
+        "host TEXT PRIMARY KEY,",
+        "max_concurrency INTEGER NOT NULL CHECK (max_concurrency >= 1),",
+        "active_count INTEGER NOT NULL DEFAULT 0 CHECK (active_count >= 0),",
+        "cooldown_until TEXT,",
+        "updated_at TEXT NOT NULL",
+        ")"
+      )
     )
   } else {
     acquisition_catalog_abort(paste0("Unknown acquisition catalog migration: ", version))
