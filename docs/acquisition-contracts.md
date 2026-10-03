@@ -124,3 +124,35 @@ claim against its actual receipt and synchronizes its source sidecar.
 `acquisition_queue_audit_cache()` delegates to the leaf audit and reports
 verified, unverified and partial files without promoting or deleting them.
 Imported size/hash claims alone never authorize receipt creation.
+
+## Campaign selection and priority contract (ACQ-2a)
+
+`acquisition_campaign_submit()` records one immutable campaign submission. The
+submission references an already registered model and input snapshot, and
+retains its threshold, policy version, actor, selected source identities,
+selection probabilities, energy evidence, and ordered priority rules. A model
+artifact is never copied into a mutable campaign row: the existing immutable
+`acquisition_models` reference remains authoritative. Reusing the same
+submission identity with different content is rejected.
+
+The caller supplies `priority_rules`; the screen package has no preferred
+country list or energy default. A rule may constrain countries and energy tags,
+and carries a stable rule ID, explanation, and integer queue priority. Energy
+tags are normalized to `wind`, `solar`, `mixed`, or `unknown`; evidence,
+confidence, and manual overrides stay with each campaign item. A mixed item
+matches a rule when one of its component tags matches. An unknown item only
+matches an explicit unknown or unrestricted rule. The matching rule and reason
+are persisted so queue order can be explained later.
+
+Submitting a source that already has a discover job reuses that durable job;
+the campaign item records the existing job ID and a `reused` outcome. This
+keeps equivalent submissions from duplicating work. Discovery-created download
+jobs inherit the campaign association and priority when available.
+
+`acquisition_campaign_reprioritize()` records a new priority-rule revision.
+It updates only campaign jobs in `queued` or `retry_wait`; running leases and
+their active transfers retain their current priority and rule. Every revision
+is retained for audit, and `acquisition_campaign_explain()` reports the current
+rule, energy evidence, queue state, and whether a reprioritization changed a
+pending job. Reprioritization is an operational queue decision and does not
+rewrite the immutable selection submission.

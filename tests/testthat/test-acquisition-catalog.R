@@ -7,20 +7,22 @@ test_that("the acquisition catalog is a separate, repeatable WAL database", {
   expect_s3_class(catalog, "planscanR_acquisition_catalog")
   expect_identical(catalog$journal_mode, "wal")
   expect_true(catalog$foreign_keys)
-  expect_identical(catalog$schema_version, 3L)
+  expect_identical(catalog$schema_version, 4L)
   expect_true(all(c(
     "acquisition_schema_migrations", "acquisition_sources",
     "acquisition_documents", "acquisition_files", "acquisition_import_ledger",
     "acquisition_models", "acquisition_selections", "acquisition_jobs",
-    "acquisition_job_attempts", "acquisition_host_limits"
+    "acquisition_job_attempts", "acquisition_host_limits", "acquisition_campaigns",
+    "acquisition_priority_rules", "acquisition_campaign_items",
+    "acquisition_campaign_reprioritizations"
   ) %in% DBI::dbListTables(catalog$conn)))
   catalog$close()
 
   reopened <- acquisition_catalog_open(path)
-  expect_identical(reopened$schema_version, 3L)
+  expect_identical(reopened$schema_version, 4L)
   expect_equal(
     DBI::dbGetQuery(reopened$conn, "SELECT COUNT(*) AS n FROM acquisition_schema_migrations")$n,
-    3
+    4
   )
   reopened$close()
 })

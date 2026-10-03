@@ -2,7 +2,7 @@
 # repository and from the planscanR cache.  This file contains only the small
 # catalog/import seam needed by later queue work; queue claims belong to ACQ-1b.
 
-acquisition_catalog_schema_version <- 3L
+acquisition_catalog_schema_version <- 4L
 
 acquisition_catalog_abort <- function(
   message,
@@ -371,6 +371,103 @@ acquisition_catalog_apply_migration <- function(conn, version) {
         "updated_at TEXT NOT NULL",
         ")"
       )
+    )
+  } else if (identical(version, 4L)) {
+    DBI::dbExecute(
+      conn,
+      paste(
+        "CREATE TABLE IF NOT EXISTS acquisition_campaigns (",
+        "campaign_id TEXT PRIMARY KEY,",
+        "selection_id TEXT NOT NULL UNIQUE,",
+        "model_id TEXT NOT NULL,",
+        "input_snapshot_id TEXT NOT NULL,",
+        "threshold REAL NOT NULL,",
+        "policy_version TEXT NOT NULL,",
+        "submitted_by TEXT,",
+        "submitted_at TEXT NOT NULL,",
+        "payload_fingerprint TEXT NOT NULL UNIQUE,",
+        "priority_revision INTEGER NOT NULL DEFAULT 0,",
+        "metadata_blob TEXT,",
+        "FOREIGN KEY (selection_id) REFERENCES acquisition_selections(selection_id),",
+        "FOREIGN KEY (model_id) REFERENCES acquisition_models(model_id)",
+        ")"
+      )
+    )
+    DBI::dbExecute(
+      conn,
+      paste(
+        "CREATE TABLE IF NOT EXISTS acquisition_priority_rules (",
+        "campaign_id TEXT NOT NULL,",
+        "revision INTEGER NOT NULL,",
+        "rule_id TEXT NOT NULL,",
+        "ordinal INTEGER NOT NULL,",
+        "name TEXT NOT NULL,",
+        "countries_blob TEXT NOT NULL,",
+        "energy_blob TEXT NOT NULL,",
+        "priority INTEGER NOT NULL,",
+        "explanation TEXT NOT NULL,",
+        "created_at TEXT NOT NULL,",
+        "PRIMARY KEY (campaign_id, revision, rule_id),",
+        "UNIQUE (campaign_id, revision, ordinal),",
+        "FOREIGN KEY (campaign_id) REFERENCES acquisition_campaigns(campaign_id)",
+        ")"
+      )
+    )
+    DBI::dbExecute(
+      conn,
+      paste(
+        "CREATE TABLE IF NOT EXISTS acquisition_campaign_items (",
+        "campaign_id TEXT NOT NULL,",
+        "item_key TEXT NOT NULL,",
+        "source_ref_id TEXT NOT NULL,",
+        "selected INTEGER NOT NULL CHECK (selected IN (0, 1)),",
+        "probability REAL,",
+        "energy_kind TEXT NOT NULL CHECK (energy_kind IN ('wind', 'solar', 'mixed', 'unknown')),",
+        "energy_tags_blob TEXT NOT NULL,",
+        "energy_evidence_blob TEXT,",
+        "energy_confidence REAL,",
+        "manual_energy_tag TEXT,",
+        "manual_override TEXT,",
+        "priority INTEGER NOT NULL,",
+        "priority_rule_id TEXT NOT NULL,",
+        "priority_explanation TEXT NOT NULL,",
+        "priority_revision INTEGER NOT NULL DEFAULT 0,",
+        "job_id TEXT,",
+        "work_status TEXT NOT NULL CHECK (work_status IN ('enqueued', 'reused', 'active', 'complete', 'not_selected')),",
+        "created_at TEXT NOT NULL,",
+        "updated_at TEXT NOT NULL,",
+        "PRIMARY KEY (campaign_id, item_key),",
+        "FOREIGN KEY (campaign_id) REFERENCES acquisition_campaigns(campaign_id),",
+        "FOREIGN KEY (source_ref_id) REFERENCES acquisition_sources(source_ref_id)",
+        ")"
+      )
+    )
+    DBI::dbExecute(
+      conn,
+      paste(
+        "CREATE TABLE IF NOT EXISTS acquisition_campaign_reprioritizations (",
+        "reprioritization_id TEXT PRIMARY KEY,",
+        "campaign_id TEXT NOT NULL,",
+        "revision INTEGER NOT NULL,",
+        "rules_blob TEXT NOT NULL,",
+        "changed_by TEXT,",
+        "changed_at TEXT NOT NULL,",
+        "payload_fingerprint TEXT NOT NULL UNIQUE,",
+        "FOREIGN KEY (campaign_id) REFERENCES acquisition_campaigns(campaign_id),",
+        "UNIQUE (campaign_id, revision)",
+        ")"
+      )
+    )
+    for (column in c("campaign_id TEXT", "campaign_item_key TEXT", "priority_rule_id TEXT", "priority_explanation TEXT")) {
+      DBI::dbExecute(conn, paste("ALTER TABLE acquisition_jobs ADD COLUMN", column))
+    }
+    DBI::dbExecute(
+      conn,
+      "CREATE INDEX IF NOT EXISTS acquisition_jobs_campaign_idx ON acquisition_jobs (campaign_id, state, priority)"
+    )
+    DBI::dbExecute(
+      conn,
+      "CREATE INDEX IF NOT EXISTS acquisition_campaign_items_job_idx ON acquisition_campaign_items (job_id)"
     )
   } else {
     acquisition_catalog_abort(paste0("Unknown acquisition catalog migration: ", version))

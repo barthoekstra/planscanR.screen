@@ -719,16 +719,88 @@ acquisition_queue_complete <- function(
     download_jobs <- list()
     if (length(registered_document_ids) > 0L) {
       download_jobs <- lapply(registered_document_ids, function(document_ref_id) {
+        campaign_item <- NULL
+        if (
+          !is.na(job$campaign_id[[1L]]) &&
+            nzchar(as.character(job$campaign_id[[1L]])) &&
+            !is.na(job$campaign_item_key[[1L]]) &&
+            nzchar(as.character(job$campaign_item_key[[1L]]))
+        ) {
+          campaign_item <- acquisition_catalog_one(
+            conn,
+            paste(
+              "SELECT priority, priority_rule_id, priority_explanation",
+              "FROM acquisition_campaign_items WHERE campaign_id = ? AND item_key = ?"
+            ),
+            params = list(
+              as.character(job$campaign_id[[1L]]),
+              as.character(job$campaign_item_key[[1L]])
+            )
+          )
+        }
+        download_priority <- if (is.null(campaign_item)) {
+          as.integer(job$priority[[1L]])
+        } else {
+          as.integer(campaign_item$priority[[1L]])
+        }
+        download_rule_id <- if (is.null(campaign_item)) {
+          as.character(job$priority_rule_id[[1L]])
+        } else {
+          as.character(campaign_item$priority_rule_id[[1L]])
+        }
+        download_explanation <- if (is.null(campaign_item)) {
+          as.character(job$priority_explanation[[1L]])
+        } else {
+          as.character(campaign_item$priority_explanation[[1L]])
+        }
         # The connection helper keeps document registration and its follow-on
         # download job in this same fenced transaction.  Host is intentionally
         # derived from each attachment URL, since a CDN may differ from the
         # discovery portal host.
-        acquisition_queue_enqueue_connection(
+        queued <- acquisition_queue_enqueue_connection(
           conn,
           kind = "download",
           target_type = "document",
-          target_ref_id = document_ref_id
+          target_ref_id = document_ref_id,
+          priority = download_priority
         )
+        if (
+          !is.na(job$campaign_id[[1L]]) &&
+            nzchar(as.character(job$campaign_id[[1L]])) &&
+            !is.null(queued$job_id)
+        ) {
+          # Discovery and download priorities use the same campaign evidence.
+          # Only an unassociated job is claimed for this campaign; a durable
+          # job already owned by another campaign remains shared work.
+          existing_download <- acquisition_catalog_one(
+            conn,
+            "SELECT campaign_id FROM acquisition_jobs WHERE job_id = ?",
+            list(queued$job_id)
+          )
+          if (
+            !is.null(existing_download) &&
+              (is.na(existing_download$campaign_id[[1L]]) || !nzchar(as.character(existing_download$campaign_id[[1L]])))
+          ) {
+            DBI::dbExecute(
+              conn,
+              paste(
+                "UPDATE acquisition_jobs SET campaign_id = ?, campaign_item_key = ?, priority = ?,",
+                "priority_rule_id = ?, priority_explanation = ?, updated_at = ?",
+                "WHERE job_id = ? AND state IN ('queued', 'retry_wait')"
+              ),
+              params = list(
+                as.character(job$campaign_id[[1L]]),
+                as.character(job$campaign_item_key[[1L]]),
+                download_priority,
+                download_rule_id,
+                download_explanation,
+                acquisition_catalog_now(),
+                queued$job_id
+              )
+            )
+          }
+        }
+        queued
       })
     }
     attempt_no <- as.integer(job$attempt_count[[1L]])
