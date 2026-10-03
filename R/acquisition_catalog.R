@@ -1525,7 +1525,7 @@ acquisition_catalog_sources <- function(catalog, country = NULL, portal = NULL) 
     params <- c(params, list(acquisition_catalog_scalar_character(portal, "portal")))
   }
   if (length(clauses) > 0L) sql <- paste(sql, "WHERE", paste(clauses, collapse = " AND "))
-  DBI::dbGetQuery(conn, sql, params = params)
+  if (length(params) == 0L) DBI::dbGetQuery(conn, sql) else DBI::dbGetQuery(conn, sql, params = params)
 }
 
 #' List document references in the acquisition catalog.
@@ -1553,7 +1553,7 @@ acquisition_catalog_documents <- function(catalog, source_ref_id = NULL, identit
     params <- c(params, list(identity_status))
   }
   if (length(clauses) > 0L) sql <- paste(sql, "WHERE", paste(clauses, collapse = " AND "))
-  DBI::dbGetQuery(conn, sql, params = params)
+  if (length(params) == 0L) DBI::dbGetQuery(conn, sql) else DBI::dbGetQuery(conn, sql, params = params)
 }
 
 #' List file claims in the acquisition catalog.
@@ -1581,5 +1581,5 @@ acquisition_catalog_files <- function(catalog, document_ref_id = NULL, verificat
     params <- c(params, list(verification_status))
   }
   if (length(clauses) > 0L) sql <- paste(sql, "WHERE", paste(clauses, collapse = " AND "))
-  DBI::dbGetQuery(conn, sql, params = params)
+  if (length(params) == 0L) DBI::dbGetQuery(conn, sql) else DBI::dbGetQuery(conn, sql, params = params)
 }

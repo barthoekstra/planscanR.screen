@@ -263,11 +263,13 @@ test_that("the built-in downloader uses a collision-safe locked destination", {
     dir.create(dirname(destination), recursive = TRUE, showWarnings = FALSE)
     existed <- file.exists(destination)
     if (!existed) writeBin(charToRaw("offline fixture"), destination)
+    sha <- unclass(as.character(openssl::sha256(readBin(destination, "raw", n = file.info(destination)$size))))
+    planscanR::reconcile_cached_download(destination, expected_size_bytes = file.info(destination)$size, expected_sha256 = sha, url = url, repair = TRUE)
     tibble::tibble(
       url = url,
       local_path = destination,
       size_bytes = file.info(destination)$size,
-      sha256 = "offline-fixture-sha256",
+      sha256 = unclass(as.character(openssl::sha256(readBin(destination, "raw", n = file.info(destination)$size)))),
       status = if (existed) "exists" else "downloaded",
       reason = NA_character_
     )
@@ -312,8 +314,10 @@ test_that("concurrent stale publication keeps one canonical file", {
     "  dir.create(dirname(destination), recursive = TRUE, showWarnings = FALSE)",
     "  existed <- file.exists(destination)",
     "  if (!existed) { writeBin(charToRaw('offline concurrent fixture'), destination); cat('new-publication\\n', file = writes, append = TRUE) }",
+    "  sha <- unclass(as.character(openssl::sha256(readBin(destination, 'raw', n = file.info(destination)$size))))",
+    "  planscanR::reconcile_cached_download(destination, expected_size_bytes = file.info(destination)$size, expected_sha256 = sha, url = url, repair = TRUE)",
     "  Sys.sleep(0.8)",
-    "  tibble::tibble(url = url, local_path = destination, size_bytes = file.info(destination)$size, sha256 = 'offline-concurrent-sha256', status = if (existed) 'exists' else 'downloaded', reason = NA_character_)",
+    "  tibble::tibble(url = url, local_path = destination, size_bytes = file.info(destination)$size, sha256 = sha, status = if (existed) 'exists' else 'downloaded', reason = NA_character_)",
     "}, .package = 'planscanR')",
     "options(planscanR.cache_dir = cache)",
     "catalog <- acquisition_catalog_open(db)",

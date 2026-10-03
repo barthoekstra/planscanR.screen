@@ -588,6 +588,21 @@ acquisition_queue_register_result_file <- function(conn, result) {
   )
 }
 
+acquisition_queue_result_has_verified_file <- function(result) {
+  required <- c("document_ref_id", "root_id", "relative_path", "local_path", "size_bytes", "sha256")
+  if (!is.list(result) || !all(required %in% names(result))) {
+    return(FALSE)
+  }
+  verification_status <- acquisition_queue_optional_value(result$verification_status, "verification_status")
+  if (!identical(as.character(verification_status), "verified")) {
+    return(FALSE)
+  }
+  all(vapply(required, function(name) {
+    value <- result[[name]]
+    length(value) == 1L && !is.na(value) && nzchar(as.character(value))
+  }, logical(1)))
+}
+
 acquisition_queue_register_result_documents <- function(conn, job, result) {
   documents <- result$documents
   if (is.null(documents) || length(documents) == 0L) {
@@ -694,7 +709,11 @@ acquisition_queue_complete <- function(
     if (identical(status, "succeeded") && identical(as.character(job$kind[[1L]]), "discover")) {
       registered_document_ids <- acquisition_queue_register_result_documents(conn, job, result)
     }
-    if (identical(status, "succeeded")) {
+    # A publication can succeed while the locked sidecar merge is retryable or
+    # blocked. Keep that verified file claim durable so the next attempt can
+    # reuse its receipt instead of fetching the bytes again. Unverified legacy
+    # claims do not satisfy acquisition_queue_result_has_verified_file().
+    if (identical(status, "succeeded") || acquisition_queue_result_has_verified_file(result)) {
       acquisition_queue_register_result_file(conn, result)
     }
     download_jobs <- list()
@@ -993,7 +1012,8 @@ acquisition_queue_document_row <- function(conn, job) {
       conn,
       paste(
         "SELECT d.document_ref_id, d.source_ref_id, d.attachment_url,",
-        "s.country, s.portal, s.native_project_id",
+        "d.legacy_local_path, s.country, s.portal, s.native_project_id,",
+        "s.legacy_sidecar_path",
         "FROM acquisition_documents d JOIN acquisition_sources s ON s.source_ref_id = d.source_ref_id",
         "WHERE d.document_ref_id = ?"
       ),
@@ -1005,7 +1025,8 @@ acquisition_queue_document_row <- function(conn, job) {
       conn,
       paste(
         "SELECT d.document_ref_id, d.source_ref_id, d.attachment_url,",
-        "s.country, s.portal, s.native_project_id",
+        "d.legacy_local_path, s.country, s.portal, s.native_project_id,",
+        "s.legacy_sidecar_path",
         "FROM acquisition_files f JOIN acquisition_documents d ON d.document_ref_id = f.document_ref_id",
         "JOIN acquisition_sources s ON s.source_ref_id = d.source_ref_id",
         "WHERE f.file_ref_id = ?"
@@ -1016,7 +1037,410 @@ acquisition_queue_document_row <- function(conn, job) {
   NULL
 }
 
-acquisition_queue_default_download <- function(job, catalog, lock_timeout = 60) {
+acquisition_queue_sidecar_row_value <- function(row, name, default = NA_character_) {
+  if (!name %in% names(row)) {
+    return(default)
+  }
+  value <- row[[name]]
+  if (length(value) == 0L || is.na(value[[1L]])) {
+    return(default)
+  }
+  as.character(value[[1L]])
+}
+
+acquisition_queue_sidecar_target <- function(row, cache_root) {
+  country <- acquisition_queue_sidecar_row_value(row, "country")
+  document_id <- acquisition_queue_sidecar_row_value(row, "native_project_id")
+  legacy_path <- acquisition_queue_sidecar_row_value(row, "legacy_sidecar_path")
+  explicit_path <- !is.na(legacy_path) && nzchar(legacy_path)
+  path <- if (explicit_path) {
+    normalizePath(legacy_path, mustWork = FALSE)
+  } else {
+    file.path(cache_root, "files", country, document_id, paste0(document_id, ".meta.json"))
+  }
+  if (!file.exists(path)) {
+    return(list(
+      status = if (explicit_path) "blocked" else "skipped",
+      error_category = if (explicit_path) "missing-sidecar" else "sidecar-missing",
+      error_message = if (explicit_path) {
+        "The persisted legacy sidecar path does not exist."
+      } else {
+        "No source sidecar exists to synchronize."
+      },
+      path = path
+    ))
+  }
+  expected_name <- paste0(document_id, ".meta.json")
+  if (!identical(basename(path), expected_name) || !identical(basename(dirname(path)), document_id)) {
+    return(list(
+      status = "blocked",
+      error_category = "sidecar-path-conflict",
+      error_message = "The sidecar path does not match the persisted native project identity.",
+      path = path
+    ))
+  }
+  country_dir <- basename(dirname(dirname(path)))
+  if (!identical(country_dir, country)) {
+    return(list(
+      status = "blocked",
+      error_category = "sidecar-path-conflict",
+      error_message = "The sidecar path does not match the persisted country identity.",
+      path = path
+    ))
+  }
+  root <- dirname(dirname(dirname(dirname(path))))
+  list(status = "ready", path = path, root = root, country = country, document_id = document_id)
+}
+
+acquisition_queue_sidecar_download_update <- function(current, row, result) {
+  if (!is.data.frame(current) || nrow(current) != 1L) {
+    acquisition_queue_abort(
+      "The source sidecar did not contain exactly one record.",
+      class = "planscanR_error_acquisition_sidecar_identity"
+    )
+  }
+  expected <- list(
+    country = acquisition_queue_sidecar_row_value(row, "country"),
+    source_portal = acquisition_queue_sidecar_row_value(row, "portal"),
+    document_id = acquisition_queue_sidecar_row_value(row, "native_project_id")
+  )
+  actual <- list(
+    country = as.character(current$country[[1L]]),
+    source_portal = as.character(current$source_portal[[1L]]),
+    document_id = as.character(current$document_id[[1L]])
+  )
+  if (!identical(actual, expected)) {
+    acquisition_queue_abort(
+      "The source sidecar identity does not match the acquisition source; refusing to write it.",
+      class = "planscanR_error_acquisition_sidecar_identity"
+    )
+  }
+  url <- acquisition_queue_optional_value(result$url, "url")
+  if (!identical(as.character(url), as.character(row$attachment_url[[1L]]))) {
+    acquisition_queue_abort("The publication URL does not match the catalog attachment.",
+      class = "planscanR_error_acquisition_sidecar_attachment"
+    )
+  }
+  status <- current[["download_status"]]
+  status <- if (is.list(status) && length(status) >= 1L) status[[1L]] else NULL
+  if (!is.data.frame(status)) status <- tibble::tibble(url = character())
+  matches <- if ("url" %in% names(status)) which(!is.na(status$url) & as.character(status$url) == url) else integer()
+  if (length(matches) > 1L) {
+    acquisition_queue_abort("The attachment URL is ambiguous in the source sidecar.",
+      class = "planscanR_error_acquisition_sidecar_attachment"
+    )
+  }
+  outcome <- tibble::tibble(
+    url = as.character(url), local_path = as.character(result$local_path),
+    status = as.character(result$download_status %||% "downloaded"),
+    size_bytes = as.numeric(result$size_bytes), sha256 = as.character(result$sha256),
+    reason = NA_character_
+  )
+  if (length(matches) == 0L) {
+    status <- dplyr::bind_rows(status, outcome)
+  } else {
+    for (name in names(outcome)) {
+      if (!name %in% names(status)) status[[name]] <- outcome[[name]][rep(NA_integer_, nrow(status))]
+      status[[name]][matches[[1L]]] <- outcome[[name]][[1L]]
+    }
+  }
+  current$download_status <- list(status)
+  current
+}
+
+acquisition_queue_sync_sidecar_row <- function(row, result, cache_root) {
+  if (!requireNamespace("planscanR", quietly = TRUE) ||
+    !exists("reconcile_cached_download", asNamespace("planscanR"), inherits = FALSE) ||
+    !exists("update_record_sidecar", asNamespace("planscanR"), inherits = FALSE)) {
+    return(list(
+      status = "blocked",
+      error_category = "missing-sidecar-api",
+      error_message = "The installed planscanR package lacks the receipt or sidecar update API."
+    ))
+  }
+  if (!acquisition_queue_result_has_verified_file(result)) {
+    return(list(
+      status = "blocked",
+      error_category = "unverified-publication",
+      error_message = "A sidecar can only be synchronized from a verified publication result."
+    ))
+  }
+  receipt <- tryCatch(
+    planscanR::reconcile_cached_download(
+      result$local_path,
+      expected_size_bytes = result$size_bytes,
+      expected_sha256 = result$sha256,
+      url = result$url,
+      repair = FALSE
+    ),
+    error = function(error) error
+  )
+  if (inherits(receipt, "error")) {
+    return(list(
+      status = "retryable",
+      error_category = "receipt-check",
+      error_message = conditionMessage(receipt)
+    ))
+  }
+  receipt_status <- as.character(receipt$status[[1L]])
+  if (!identical(receipt_status, "verified")) {
+    return(list(
+      status = "blocked",
+      error_category = if (identical(receipt_status, "partial")) "partial-publication" else "unverified-publication",
+      error_message = as.character(receipt$reason[[1L]] %||% receipt_status),
+      receipt_status = receipt_status
+    ))
+  }
+  receipt_size <- suppressWarnings(as.numeric(receipt$size_bytes[[1L]]))
+  receipt_sha256 <- as.character(receipt$sha256[[1L]])
+  if (
+    is.na(receipt_size) ||
+      receipt_size != as.numeric(result$size_bytes) ||
+      is.na(receipt_sha256) ||
+      !identical(tolower(receipt_sha256), tolower(as.character(result$sha256)))
+  ) {
+    return(list(
+      status = "blocked",
+      error_category = "receipt-metadata-mismatch",
+      error_message = "The receipt metadata does not match the catalog publication result.",
+      receipt_status = receipt_status
+    ))
+  }
+  target <- acquisition_queue_sidecar_target(row, cache_root)
+  if (!identical(target$status, "ready")) {
+    if (identical(target$status, "skipped")) {
+      return(list(
+        status = "succeeded",
+        sync_status = "skipped",
+        sync_reason = target$error_message,
+        receipt_status = receipt_status
+      ))
+    }
+    return(target)
+  }
+  updated <- tryCatch(
+    {
+      planscanR::update_record_sidecar(
+        target$country,
+        target$document_id,
+        function(current) acquisition_queue_sidecar_download_update(current, row, result),
+        root = target$root
+      )
+      TRUE
+    },
+    error = function(error) error
+  )
+  if (inherits(updated, "error")) {
+    classes <- class(updated)
+    blocked <- any(grepl("sidecar_(identity|attachment|missing|corrupt)|acquisition_sidecar_(identity|attachment)", classes))
+    return(list(
+      status = if (blocked) "blocked" else "retryable",
+      error_category = if (blocked) "sidecar-identity-conflict" else "sidecar-sync",
+      error_message = conditionMessage(updated)
+    ))
+  }
+  list(status = "succeeded", sync_status = "succeeded", receipt_status = receipt_status, sidecar_path = target$path)
+}
+
+#' Synchronize one verified catalog download into its source sidecar.
+#'
+#' The receipt is checked before the locked sidecar callback runs. The callback
+#' validates country, portal, native project ID, and attachment URL against the
+#' latest sidecar row, so a same-country portal collision is blocked without a
+#' write. Legacy claims remain unverified and cannot enter this path.
+#'
+#' @param catalog A catalog from [acquisition_catalog_open()].
+#' @param document_ref_id Registered document reference ID.
+#' @param result Verified publication result from a queue worker.
+#' @param cache_root Cache root containing the published attachment.
+#' @return A list with `status` and synchronization details.
+#' @export
+acquisition_queue_sync_sidecar <- function(catalog, document_ref_id, result, cache_root = NULL) {
+  document_ref_id <- acquisition_catalog_scalar_character(document_ref_id, "document_ref_id")
+  cache_root <- cache_root %||% planscanR::cache_dir_default()
+  cache_root <- acquisition_catalog_scalar_character(cache_root, "cache_root")
+  row <- acquisition_catalog_one(
+    acquisition_catalog_connection(catalog),
+    paste(
+      "SELECT d.document_ref_id, d.source_ref_id, d.attachment_url,",
+      "d.legacy_local_path, s.country, s.portal, s.native_project_id,",
+      "s.legacy_sidecar_path",
+      "FROM acquisition_documents d JOIN acquisition_sources s ON s.source_ref_id = d.source_ref_id",
+      "WHERE d.document_ref_id = ?"
+    ),
+    list(document_ref_id)
+  )
+  if (is.null(row)) {
+    return(list(status = "blocked", error_category = "missing-document", error_message = "The document reference was not found."))
+  }
+  result$document_ref_id <- document_ref_id
+  acquisition_queue_sync_sidecar_row(row, result, cache_root)
+}
+
+#' Reconcile a verified catalog file and synchronize its source sidecar.
+#'
+#' Only `planscan-cache` locations are resolved by this compact service. A
+#' legacy or unverified claim is reported without promoting its bytes.
+#'
+#' @param catalog A catalog from [acquisition_catalog_open()].
+#' @param file_ref_id Registered file reference ID.
+#' @param cache_root Cache root containing the published attachment.
+#' @return A list with `status` and reconciliation details.
+#' @export
+acquisition_queue_reconcile_file <- function(catalog, file_ref_id, cache_root = NULL) {
+  file_ref_id <- acquisition_catalog_scalar_character(file_ref_id, "file_ref_id")
+  cache_root <- cache_root %||% planscanR::cache_dir_default()
+  cache_root <- acquisition_catalog_scalar_character(cache_root, "cache_root")
+  row <- acquisition_catalog_one(
+    acquisition_catalog_connection(catalog),
+    paste(
+      "SELECT f.file_ref_id, f.document_ref_id, f.root_id, f.relative_path,",
+      "f.sha256, f.size_bytes, f.verification_status, f.provenance,",
+      "d.source_ref_id, d.attachment_url, d.legacy_local_path,",
+      "s.country, s.portal, s.native_project_id, s.legacy_sidecar_path",
+      "FROM acquisition_files f JOIN acquisition_documents d ON d.document_ref_id = f.document_ref_id",
+      "JOIN acquisition_sources s ON s.source_ref_id = d.source_ref_id",
+      "WHERE f.file_ref_id = ?"
+    ),
+    list(file_ref_id)
+  )
+  if (is.null(row)) {
+    return(list(status = "blocked", error_category = "missing-file", error_message = "The file reference was not found."))
+  }
+  if (!identical(as.character(row$verification_status[[1L]]), "verified")) {
+    return(list(status = "blocked", error_category = "unverified-file-claim", error_message = "Legacy or unverified file claims cannot repair receipts."))
+  }
+  if (!identical(as.character(row$root_id[[1L]]), "planscan-cache")) {
+    return(list(status = "blocked", error_category = "unknown-storage-root", error_message = "The file storage root is not mapped to the active cache."))
+  }
+  local_path <- file.path(cache_root, as.character(row$relative_path[[1L]]))
+  result <- list(
+    status = "succeeded",
+    document_ref_id = as.character(row$document_ref_id[[1L]]),
+    root_id = as.character(row$root_id[[1L]]),
+    relative_path = as.character(row$relative_path[[1L]]),
+    local_path = local_path,
+    size_bytes = as.numeric(row$size_bytes[[1L]]),
+    sha256 = as.character(row$sha256[[1L]]),
+    verification_status = "verified",
+    provenance = as.character(row$provenance[[1L]]),
+    url = as.character(row$attachment_url[[1L]]),
+    download_status = "downloaded"
+  )
+  out <- acquisition_queue_sync_sidecar_row(row, result, cache_root)
+  out$file_ref_id <- file_ref_id
+  out
+}
+
+#' Recover an exhausted download job from its existing publication receipt.
+#'
+#' This explicit local operation never downloads or resets retry limits. It
+#' appends a receipt-only audited attempt and uses normal lease fencing. Active
+#' leases are refused; only failed or blocked download jobs may be reconciled.
+#' Catalog-only sources with no implicit sidecar report synchronization skipped.
+#'
+#' @param catalog A catalog from [acquisition_catalog_open()].
+#' @param job_id Failed or blocked download job ID.
+#' @param cache_root Root containing the canonical published attachment.
+#' @return A list with `ok`, `status`, and recovery details.
+#' @export
+acquisition_queue_reconcile_job <- function(catalog, job_id, cache_root = NULL) {
+  job_id <- acquisition_catalog_scalar_character(job_id, "job_id")
+  cache_root <- cache_root %||% planscanR::cache_dir_default()
+  conn <- acquisition_catalog_connection(catalog)
+  job <- acquisition_catalog_one(conn, "SELECT * FROM acquisition_jobs WHERE job_id = ?", list(job_id))
+  if (is.null(job) || !identical(job$kind[[1L]], "download")) {
+    return(list(ok = FALSE, status = "blocked", error_category = "not-download-job"))
+  }
+  row <- acquisition_queue_document_row(conn, as.list(job))
+  if (is.null(row) || is.na(row$attachment_url[[1L]])) {
+    return(list(ok = FALSE, status = "blocked", error_category = "missing-attachment-url"))
+  }
+  path <- planscanR::cache_path(row$attachment_url[[1L]], row$country[[1L]],
+    acquisition_queue_cache_document_id(row$source_ref_id[[1L]], row$document_ref_id[[1L]]),
+    cache_dir = cache_root
+  )
+  if (!file.exists(path)) path <- planscanR::resolve_cached_path(path)
+  if (is.na(path) || !file.exists(path)) {
+    return(list(ok = FALSE, status = "blocked", error_category = "missing-publication"))
+  }
+  receipt <- planscanR::reconcile_cached_download(path, url = row$attachment_url[[1L]], repair = FALSE)
+  if (!identical(receipt$status[[1L]], "verified")) {
+    return(list(ok = FALSE, status = "blocked", error_category = "unverified-publication"))
+  }
+  publication <- list(
+    status = "succeeded", document_ref_id = row$document_ref_id[[1L]],
+    root_id = "planscan-cache", relative_path = acquisition_queue_relative_path(path, cache_root),
+    local_path = path, size_bytes = receipt$size_bytes[[1L]], sha256 = receipt$sha256[[1L]],
+    verification_status = "verified", provenance = "receipt-only-reconciliation",
+    reconciliation = "receipt-only", url = row$attachment_url[[1L]], download_status = "cached"
+  )
+  claim <- acquisition_catalog_transaction(catalog, function(conn) {
+    now <- acquisition_catalog_now()
+    current <- acquisition_catalog_one(conn, "SELECT * FROM acquisition_jobs WHERE job_id = ?", list(job_id))
+    if (!current$state[[1L]] %in% c("failed", "blocked")) {
+      return(list(ok = FALSE, status = "not-terminal"))
+    }
+    attempt <- as.integer(current$attempt_count[[1L]]) + 1L
+    token <- paste0("receipt-", acquisition_catalog_digest(list(job_id, Sys.time(), Sys.getpid(), runif(1))))
+    expires <- acquisition_queue_time_after(300)
+    DBI::dbExecute(conn, paste(
+      "INSERT INTO acquisition_job_attempts (job_id, attempt_no, lease_token, worker_id, host,",
+      "claimed_at, lease_expires_at, heartbeat_at, outcome, result_blob)",
+      "VALUES (?, ?, ?, 'receipt-only-reconciliation', ?, ?, ?, ?, 'running', ?)"
+    ),
+    params = list(
+      job_id, attempt, token, current$host[[1L]], now, expires, now,
+      acquisition_catalog_blob(list(reconciliation = "receipt-only"))
+    )
+    )
+    DBI::dbExecute(conn, paste(
+      "UPDATE acquisition_jobs SET state = 'running', attempt_count = ?,",
+      "lease_token = ?, worker_id = 'receipt-only-reconciliation', lease_expires_at = ?, updated_at = ? WHERE job_id = ?"
+    ),
+    params = list(attempt, token, expires, now, job_id)
+    )
+    acquisition_queue_sync_host_counts(conn, now)
+    list(ok = TRUE, lease_token = token)
+  })
+  if (!isTRUE(claim$ok)) {
+    return(claim)
+  }
+  synced <- tryCatch(acquisition_queue_sync_sidecar_row(row, publication, cache_root),
+    error = function(error) list(status = "retryable", error_category = "sidecar-sync", error_message = conditionMessage(error))
+  )
+  publication$status <- synced$status
+  publication$sync_status <- synced$sync_status %||% synced$status
+  publication$error_category <- synced$error_category
+  publication$error_message <- synced$error_message
+  completion <- acquisition_queue_complete(catalog, job_id, claim$lease_token,
+    status = publication$status, result = publication
+  )
+  completion$reconciliation <- "receipt-only"
+  completion$sync_status <- publication$sync_status
+  completion
+}
+
+#' Audit cache files for verified, unverified, and interrupted publications.
+#'
+#' @param cache_dir Cache root. Defaults to planscanR's cache root.
+#' @param country Optional country filter.
+#' @return The tibble returned by [planscanR::audit_cache_downloads()].
+#' @export
+acquisition_queue_audit_cache <- function(cache_dir = NULL, country = NULL) {
+  if (!requireNamespace("planscanR", quietly = TRUE) ||
+    !exists("audit_cache_downloads", asNamespace("planscanR"), inherits = FALSE)) {
+    acquisition_queue_abort("The installed planscanR package lacks audit_cache_downloads().")
+  }
+  planscanR::audit_cache_downloads(cache_dir = cache_dir, country = country)
+}
+
+acquisition_queue_default_download <- function(
+  job,
+  catalog,
+  lock_timeout = 60,
+  sidecar_sync_fn = acquisition_queue_sync_sidecar_row
+) {
   if (!requireNamespace("filelock", quietly = TRUE)) {
     return(list(status = "blocked", error_category = "missing-filelock", error_message = "The filelock package is required for canonical publication."))
   }
@@ -1063,18 +1487,74 @@ acquisition_queue_default_download <- function(job, catalog, lock_timeout = 60) 
     if (is.na(local_path) || !file.exists(local_path)) {
       return(list(status = "retryable", error_category = "missing-published-file", error_message = "The downloader reported success without a file."))
     }
-    return(list(
+    size_bytes <- as.numeric(result$size_bytes[[1L]])
+    sha256 <- as.character(result$sha256[[1L]])
+    receipt <- tryCatch(
+      planscanR::reconcile_cached_download(
+        local_path,
+        expected_size_bytes = size_bytes,
+        expected_sha256 = sha256,
+        url = url,
+        repair = FALSE
+      ),
+      error = function(error) error
+    )
+    if (inherits(receipt, "error")) {
+      return(list(
+        status = "retryable",
+        error_category = "receipt-check",
+        error_message = conditionMessage(receipt)
+      ))
+    }
+    if (!identical(as.character(receipt$status[[1L]]), "verified")) {
+      return(list(
+        status = "retryable",
+        error_category = "unverified-publication",
+        error_message = as.character(receipt$reason[[1L]] %||% receipt$status[[1L]]),
+        receipt_status = as.character(receipt$status[[1L]])
+      ))
+    }
+    publication <- list(
       status = "succeeded",
       document_ref_id = document_ref_id,
       root_id = "planscan-cache",
       relative_path = acquisition_queue_relative_path(local_path, cache_root),
       local_path = local_path,
-      size_bytes = as.numeric(result$size_bytes[[1L]]),
-      sha256 = as.character(result$sha256[[1L]]),
+      size_bytes = size_bytes,
+      sha256 = sha256,
       verification_status = "verified",
       provenance = "planscanR-download",
-      url = url
-    ))
+      url = url,
+      download_status = if (identical(status, "exists")) "cached" else "downloaded",
+      receipt_status = as.character(receipt$status[[1L]])
+    )
+    synchronized <- tryCatch(
+      sidecar_sync_fn(row, publication, cache_root),
+      error = function(error) {
+        list(
+          status = "retryable",
+          error_category = "sidecar-sync",
+          error_message = conditionMessage(error)
+        )
+      }
+    )
+    if (!is.list(synchronized) || is.null(synchronized$status)) {
+      synchronized <- list(
+        status = "retryable",
+        error_category = "sidecar-sync",
+        error_message = "The sidecar synchronization callback returned no status."
+      )
+    }
+    if (!identical(as.character(synchronized$status[[1L]]), "succeeded")) {
+      publication$status <- as.character(synchronized$status[[1L]])
+      publication$error_category <- synchronized$error_category %||% "sidecar-sync"
+      publication$error_message <- synchronized$error_message %||% "The sidecar synchronization did not complete."
+      publication$sync_status <- synchronized$status
+      return(publication)
+    }
+    publication$sync_status <- synchronized$sync_status %||% "succeeded"
+    publication$sidecar_path <- synchronized$sidecar_path %||% NA_character_
+    return(publication)
   }
   if (identical(status, "skipped_size")) {
     return(list(status = "blocked", error_category = "download-size-limit", error_message = as.character(result$reason[[1L]])))

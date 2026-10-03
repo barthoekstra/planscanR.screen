@@ -289,3 +289,12 @@ test_that("model and selection references are immutable and retain artifacts", {
   )
   catalog$close()
 })
+
+
+test_that("unfiltered catalog listings accept an empty acquisition database", {
+  catalog <- acquisition_catalog_open(withr::local_tempfile(fileext = ".sqlite"))
+  on.exit(catalog$close(), add = TRUE)
+  expect_equal(nrow(acquisition_catalog_sources(catalog)), 0L)
+  expect_equal(nrow(acquisition_catalog_documents(catalog)), 0L)
+  expect_equal(nrow(acquisition_catalog_files(catalog)), 0L)
+})

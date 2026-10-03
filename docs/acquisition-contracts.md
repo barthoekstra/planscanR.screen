@@ -90,3 +90,37 @@ the planscanR download call and uses `overwrite = FALSE`; an interrupted or
 stale attempt may leave only an unreferenced staging/verified receipt, while a
 later attempt reuses an existing verified copy instead of overwriting it.
 Injected handlers remain available for deterministic offline tests.
+
+
+## Reconciliation and sidecar synchronization
+
+Download completion checks the actual leaf verification receipt before
+registering bytes. The worker synchronizes attachment outcomes through the
+leaf's locked latest-row callback, retaining classification, relevance and
+translation fields. Existing sidecars must match the persisted country,
+portal and native project ID; ambiguous URL matches are blocked. A newly
+discovered attachment appends its outcome to an identity-matched sidecar.
+A missing explicit legacy sidecar is blocked. Catalog-only sources without
+an existing implicit sidecar return `sync_status = "skipped"`; the worker does
+not invent project metadata or claim that a sidecar was updated.
+
+If synchronization fails, verified file metadata is retained with the failed
+or retryable attempt. Normal retry reuses the receipt-backed file. If a crash
+exhausts the last allowed download attempt before catalog completion, run
+`acquisition_queue_recover()` and then
+`acquisition_queue_reconcile_job(catalog, job_id, cache_root)`. This explicit
+local operation accepts only failed or blocked download jobs, checks the
+canonical publication receipt, obtains a new fenced lease, synchronizes the
+sidecar and registers the file. It never calls the downloader or resets
+`max_attempts`. Its extra attempt is identified by worker and result metadata
+as `receipt-only-reconciliation` / `receipt-only`; prior attempts remain in
+the audit, and the total attempt count includes local reconciliation.
+Missing, partial and unverified bytes cannot enter this route. An active
+lease cannot be replaced. If synchronization is interrupted again, the same
+explicit local operation can be retried after recovery.
+
+`acquisition_queue_reconcile_file()` checks an already registered verified
+claim against its actual receipt and synchronizes its source sidecar.
+`acquisition_queue_audit_cache()` delegates to the leaf audit and reports
+verified, unverified and partial files without promoting or deleting them.
+Imported size/hash claims alone never authorize receipt creation.
