@@ -134,7 +134,7 @@ acquisition_storage_create_job_table <- function(conn) {
     paste0(
       "CREATE TABLE acquisition_jobs_new (",
       "job_id TEXT PRIMARY KEY,",
-      "kind TEXT NOT NULL CHECK (kind IN ('discover', 'download', 'migrate_storage')),",
+      "kind TEXT NOT NULL CHECK (kind IN ('discover', 'download', 'migrate_storage', 'ingest')),",
       "target_type TEXT NOT NULL CHECK (target_type IN ('source', 'document', 'file', 'storage_root')),",
       "target_ref_id TEXT NOT NULL,",
       "idempotency_key TEXT NOT NULL UNIQUE,",
@@ -186,6 +186,7 @@ acquisition_storage_rebuild_queue <- function(conn) {
     "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'acquisition_jobs_target_idx'"
   )
   if (length(sql) == 1L && grepl("migrate_storage", sql, fixed = TRUE) &&
+    grepl("'ingest'", sql, fixed = TRUE) &&
     grepl("storage_root", sql, fixed = TRUE) &&
     "estimated_bytes" %in% DBI::dbListFields(conn, "acquisition_jobs") &&
     nrow(target_index) == 1L &&
@@ -245,6 +246,65 @@ acquisition_storage_rebuild_queue <- function(conn) {
     DBI::dbExecute(conn, "CREATE INDEX acquisition_jobs_campaign_idx ON acquisition_jobs (campaign_id, state, priority)")
   }
   invisible(TRUE)
+}
+
+acquisition_storage_rebuild_queue_dependents <- function(conn) {
+  if ("acquisition_storage_reservations" %in% DBI::dbListTables(conn)) {
+    DBI::dbExecute(conn, "ALTER TABLE acquisition_storage_reservations RENAME TO acquisition_storage_reservations_old")
+    DBI::dbExecute(conn, paste(
+      "CREATE TABLE acquisition_storage_reservations (",
+      "reservation_id TEXT PRIMARY KEY, job_id TEXT NOT NULL UNIQUE, root_id TEXT NOT NULL,",
+      "bytes REAL NOT NULL CHECK (bytes >= 0), state TEXT NOT NULL CHECK (state IN ('held', 'released')),",
+      "created_at TEXT NOT NULL, released_at TEXT,",
+      "FOREIGN KEY (root_id) REFERENCES acquisition_storage_roots(root_id),",
+      "FOREIGN KEY (job_id) REFERENCES acquisition_jobs(job_id))"
+    ))
+    DBI::dbExecute(conn, paste(
+      "INSERT INTO acquisition_storage_reservations",
+      "SELECT reservation_id, job_id, root_id, bytes, state, created_at, released_at",
+      "FROM acquisition_storage_reservations_old"
+    ))
+    DBI::dbExecute(conn, "DROP TABLE acquisition_storage_reservations_old")
+  }
+  if ("acquisition_control_pauses" %in% DBI::dbListTables(conn)) {
+    DBI::dbExecute(conn, "ALTER TABLE acquisition_control_pauses RENAME TO acquisition_control_pauses_old")
+    DBI::dbExecute(conn, paste(
+      "CREATE TABLE acquisition_control_pauses (",
+      "job_id TEXT NOT NULL, target_type TEXT NOT NULL CHECK (target_type IN ('job', 'campaign')),",
+      "target_id TEXT NOT NULL, previous_state TEXT NOT NULL, previous_available_at TEXT NOT NULL,",
+      "paused_at TEXT NOT NULL, PRIMARY KEY (job_id, target_type, target_id),",
+      "FOREIGN KEY (job_id) REFERENCES acquisition_jobs(job_id))"
+    ))
+    DBI::dbExecute(conn, paste(
+      "INSERT INTO acquisition_control_pauses",
+      "SELECT job_id, target_type, target_id, previous_state, previous_available_at, paused_at",
+      "FROM acquisition_control_pauses_old"
+    ))
+    DBI::dbExecute(conn, "DROP TABLE acquisition_control_pauses_old")
+  }
+  invisible(TRUE)
+}
+
+acquisition_storage_upgrade_ingest_queue <- function(conn, busy_timeout) {
+  sql <- DBI::dbGetQuery(
+    conn,
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'acquisition_jobs'"
+  )$sql
+  if (length(sql) != 1L || grepl("'ingest'", sql, fixed = TRUE)) {
+    return(invisible(FALSE))
+  }
+  old_foreign_keys <- as.integer(DBI::dbGetQuery(conn, "PRAGMA foreign_keys")[[1L]]) == 1L
+  DBI::dbExecute(conn, "PRAGMA foreign_keys = OFF")
+  on.exit(DBI::dbExecute(conn, paste0("PRAGMA foreign_keys = ", as.integer(old_foreign_keys))), add = TRUE)
+  acquisition_catalog_transaction_connection(conn, function(connection) {
+    acquisition_storage_rebuild_queue(connection)
+    acquisition_storage_rebuild_queue_dependents(connection)
+    violations <- DBI::dbGetQuery(connection, "PRAGMA foreign_key_check")
+    if (nrow(violations) > 0L) {
+      acquisition_storage_abort("The ingestion queue migration would leave broken foreign keys.", class = "planscanR_error_acquisition_schema")
+    }
+    invisible(TRUE)
+  }, busy_timeout = busy_timeout)
 }
 
 acquisition_storage_apply_migration <- function(conn, version) {
@@ -339,6 +399,7 @@ acquisition_storage_migrate <- function(conn, busy_timeout = 5000L) {
       invisible(TRUE)
     }, busy_timeout = busy_timeout)
   }
+  acquisition_storage_upgrade_ingest_queue(conn, busy_timeout)
   acquisition_storage_ensure_default_root_connection(conn)
   invisible(acquisition_storage_schema_version)
 }

@@ -373,6 +373,7 @@ acquisition_dashboard_summary <- function(
     file_counts = file_counts,
     stages = stages,
     stage_counts = stages,
+    ingestion = acquisition_dashboard_ingestion_metrics(catalog),
     jobs = jobs,
     workers = acquisition_dashboard_workers(catalog),
     progress = progress,
@@ -382,6 +383,48 @@ acquisition_dashboard_summary <- function(
       files = as.integer(unknown_file_count),
       bytes = as.integer(unknown_bytes)
     )
+  )
+}
+
+acquisition_dashboard_ingestion_metrics <- function(catalog) {
+  conn <- acquisition_catalog_connection(catalog)
+  states <- DBI::dbGetQuery(
+    conn,
+    "SELECT state, COUNT(*) AS jobs FROM acquisition_jobs WHERE kind = 'ingest' GROUP BY state"
+  )
+  counts <- stats::setNames(as.integer(states$jobs), as.character(states$state))
+  state_count <- function(name) {
+    value <- counts[name]
+    if (length(value) == 0L || is.na(value[[1L]])) 0L else as.integer(value[[1L]])
+  }
+  attempts <- DBI::dbGetQuery(
+    conn,
+    paste(
+      "SELECT a.bytes, a.claimed_at, a.finished_at",
+      "FROM acquisition_job_attempts a JOIN acquisition_jobs j ON j.job_id = a.job_id",
+      "WHERE j.kind = 'ingest' AND a.outcome = 'succeeded' AND a.finished_at IS NOT NULL"
+    )
+  )
+  seconds <- if (nrow(attempts) == 0L) {
+    numeric(0)
+  } else {
+    as.numeric(
+      as.POSIXct(attempts$finished_at, format = "%Y-%m-%dT%H:%M:%OS", tz = "UTC") -
+        as.POSIXct(attempts$claimed_at, format = "%Y-%m-%dT%H:%M:%OS", tz = "UTC")
+    )
+  }
+  measured <- is.finite(seconds) & seconds > 0 & !is.na(attempts$bytes)
+  bytes <- if (nrow(attempts) == 0L) numeric(0) else as.numeric(attempts$bytes)
+  list(
+    backlog = state_count("queued") + state_count("retry_wait"),
+    queued = state_count("queued"),
+    retry_wait = state_count("retry_wait"),
+    running = state_count("running"),
+    succeeded = state_count("succeeded"),
+    failed = state_count("failed") + state_count("blocked"),
+    observed_completed_bytes = if (any(!is.na(bytes))) sum(bytes, na.rm = TRUE) else NA_real_,
+    observed_mean_seconds = if (any(measured)) mean(seconds[measured]) else NA_real_,
+    observed_bytes_per_second = if (any(measured)) sum(bytes[measured]) / sum(seconds[measured]) else NA_real_
   )
 }
 

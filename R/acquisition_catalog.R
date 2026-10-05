@@ -2,7 +2,7 @@
 # repository and from the planscanR cache.  This file contains only the small
 # catalog/import seam needed by later queue work; queue claims belong to ACQ-1b.
 
-acquisition_catalog_schema_version <- 4L
+acquisition_catalog_schema_version <- 5L
 
 acquisition_catalog_abort <- function(
   message,
@@ -469,6 +469,9 @@ acquisition_catalog_apply_migration <- function(conn, version) {
       conn,
       "CREATE INDEX IF NOT EXISTS acquisition_campaign_items_job_idx ON acquisition_campaign_items (job_id)"
     )
+  } else if (identical(version, 5L)) {
+    # Queue CHECK expansion runs after this numbered transaction. SQLite only
+    # permits the safe rebuild with foreign keys temporarily disabled.
   } else {
     acquisition_catalog_abort(paste0("Unknown acquisition catalog migration: ", version))
   }

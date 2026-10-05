@@ -11,7 +11,10 @@ acquisition_worker_run(
   lease_seconds = 300L,
   handlers = NULL,
   poll_seconds = 0,
-  lock_timeout = 60
+  lock_timeout = 60,
+  job_kinds = acquisition_queue_default_job_kinds,
+  ingest_fn = NULL,
+  embedding_model = NULL
 )
 }
 \arguments{
@@ -23,12 +26,18 @@ acquisition_worker_run(
 
 \item{lease_seconds}{Lease duration for each claim.}
 
-\item{handlers}{Optional named list with \code{discover} and/or \code{download}
-functions.}
+\item{handlers}{Optional named list with queue handlers.}
 
 \item{poll_seconds}{Optional delay after an empty claim before returning.}
 
 \item{lock_timeout}{Download publication lock timeout in seconds.}
+
+\item{job_kinds}{Job kinds eligible for this worker. Defaults to discovery,
+download, and storage migration; ingestion requires an explicit worker.}
+
+\item{ingest_fn}{Optional injected RAG \code{ingest_verified_file} callback.}
+
+\item{embedding_model}{Optional model identifier passed to \code{ingest_fn}.}
 }
 \value{
 A list of worker outcomes, one per claimed job.

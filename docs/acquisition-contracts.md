@@ -125,6 +125,39 @@ claim against its actual receipt and synchronizes its source sidecar.
 verified, unverified and partial files without promoting or deleting them.
 Imported size/hash claims alone never authorize receipt creation.
 
+## Verified background ingestion (ACQ-4a)
+
+Document ingestion is a durable `ingest` job in this catalog and remains
+separate from the default discovery, download, and storage-migration workers.
+Only an immutable file version with a current verified planscanR receipt may
+be enqueued or passed to the injected RAG handler. Receipt verification and
+SHA-256 checking happen again immediately before the handler call. Missing,
+changed, or unverified files are blocked and never reach RAG. Ingestion runs
+outside the short queue transaction and uses the existing lease heartbeat and
+token-fenced completion, so a worker that loses its lease cannot publish a
+successful ingestion outcome.
+
+The screen worker accepts an optional `ingest` callback; it does not import or
+require planscanR.RAG. The callback contract is
+`ingest_verified_file(file_path, sha256, document_id, country,
+version_id = NULL, cache_dir, embedding_model, ...)`, returning
+`list(status = "succeeded", result = <one-row summary>, provenance = <list>)`.
+It returns `status = "retryable"` with an `error` for retryable processing
+failures, or `status = "blocked"` when its independent receipt validation
+rejects the file. The caller maps those outcomes through the shared queue's
+existing attempt state machine. Job identity includes the immutable version
+identity (and content digest), so successful work for one version does not
+mark other versions complete; retrying a failed stage uses the same durable
+job and attempt history. Ingestion failures are recorded independently and do
+not alter download job state.
+
+The RAG handler deduplicates costly document processing by verified content
+hash while retaining every distinct document, country, and version association
+in its provenance. Backlog and resource reporting comes from persisted queue
+states and observed attempt start/finish times and byte counts. Unknown
+measurements remain unknown; the dashboard does not infer throughput or
+capacity from configured limits alone.
+
 ## Campaign selection and priority contract (ACQ-2a)
 
 `acquisition_campaign_submit()` records one immutable campaign submission. The
