@@ -14,6 +14,7 @@ run_curation(
   launch.browser = interactive(),
   actor_probe = NULL,
   logout_path = NULL,
+  historical_reviews = NULL,
   ...
 )
 }
@@ -39,6 +40,9 @@ socket-expiry check. Mutation paths always use \code{actor_resolver}.}
 
 \item{logout_path}{Optional local POST path rendered as a visible Log out
 control, for example \verb{/app/logout}. It is absent by default.}
+
+\item{historical_reviews}{Optional data frame of imported historical review
+linkage and attribution rows. Unresolved rows are shown read-only.}
 
 \item{...}{Further arguments passed to \code{\link[shiny:runApp]{shiny::runApp()}}, such as \code{host} or
 \code{port}.}

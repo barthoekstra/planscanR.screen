@@ -73,6 +73,334 @@ curation_app_empty_reviews <- function() {
   )
 }
 
+curation_app_normalize_historical_links <- function(rows) {
+  if (is.null(rows) || !is.data.frame(rows) || nrow(rows) == 0L) {
+    return(data.frame(
+      import_row_id = character(0), country = character(0), document_id = character(0),
+      original_source = character(0), imported_source = character(0),
+      historical_reviewer = character(0),
+      historical_linkage = character(0), current_linkage = character(0),
+      current_match_count = integer(0), linkage_status = character(0),
+      mutation_allowed = logical(0), stringsAsFactors = FALSE
+    ))
+  }
+  required <- c("country", "document_id")
+  if (!all(required %in% names(rows))) {
+    curation_abort(
+      "Historical linkage rows must include country and document_id.",
+      class = "planscanR_error_curation_repository"
+    )
+  }
+  rows$country <- as.character(rows$country)
+  rows$document_id <- as.character(rows$document_id)
+  if (!"import_row_id" %in% names(rows)) rows$import_row_id <- NA_character_
+  rows$import_row_id <- as.character(rows$import_row_id)
+  source_column <- intersect(c("original_source", "historical_source", "source"), names(rows))
+  rows$original_source <- if (length(source_column) == 0L) NA_character_ else as.character(rows[[source_column[[1L]]]])
+  imported_column <- intersect(c("imported_source", "normalized_source", "source"), names(rows))
+  rows$imported_source <- if (length(imported_column) == 0L) NA_character_ else as.character(rows[[imported_column[[1L]]]])
+  reviewer_column <- intersect(c("historical_reviewer", "legacy_reviewer", "reviewer", "reviewer_id"), names(rows))
+  rows$historical_reviewer <- if (length(reviewer_column) == 0L) NA_character_ else as.character(rows[[reviewer_column[[1L]]]])
+  historical_column <- intersect(c("historical_linkage", "metadata_match"), names(rows))
+  rows$historical_linkage <- if (length(historical_column) == 0L) "unverified" else as.character(rows[[historical_column[[1L]]]])
+  rows$historical_linkage[is.na(rows$historical_linkage) | !nzchar(rows$historical_linkage)] <- "unverified"
+  if (!"current_match_count" %in% names(rows)) {
+    rows$current_match_count <- NA_integer_
+  } else {
+    rows$current_match_count <- suppressWarnings(as.integer(rows$current_match_count))
+  }
+  if (!"current_linkage" %in% names(rows)) {
+    rows$current_linkage <- ifelse(
+      rows$current_match_count == 1L, "current_unique",
+      ifelse(rows$current_match_count == 0L, "historical_only", "unverified")
+    )
+  } else {
+    rows$current_linkage <- as.character(rows$current_linkage)
+  }
+  rows$current_linkage[is.na(rows$current_linkage) | !nzchar(rows$current_linkage)] <- "unverified"
+  if (!"linkage_status" %in% names(rows)) {
+    rows$linkage_status <- ifelse(
+      !is.na(rows$current_match_count), rows$current_linkage, rows$historical_linkage
+    )
+  } else {
+    rows$linkage_status <- as.character(rows$linkage_status)
+  }
+  rows$linkage_status[is.na(rows$linkage_status) | !nzchar(rows$linkage_status)] <- "unverified"
+  if (!"mutation_allowed" %in% names(rows)) {
+    rows$mutation_allowed <- !is.na(rows$current_match_count) & rows$current_match_count == 1L
+  } else {
+    rows$mutation_allowed <- as.logical(rows$mutation_allowed)
+    rows$mutation_allowed[is.na(rows$mutation_allowed)] <- FALSE
+  }
+  rows
+}
+
+curation_app_historical_review_rows <- function(reviews, historical_links = NULL) {
+  reviews <- curation_app_normalize_reviews(reviews)
+  if (!"import_row_id" %in% names(reviews)) reviews$import_row_id <- NA_character_
+  historical_links <- curation_app_normalize_historical_links(historical_links)
+  if (nrow(reviews) == 0L || nrow(historical_links) == 0L) {
+    return(reviews)
+  }
+  review_key <- curation_app_key_string(reviews$country, reviews$document_id)
+  link_key <- curation_app_key_string(historical_links$country, historical_links$document_id)
+  link_row <- vapply(seq_len(nrow(reviews)), function(i) {
+    if (!is.na(reviews$import_row_id[[i]]) && nzchar(reviews$import_row_id[[i]])) {
+      hit <- which(historical_links$import_row_id == reviews$import_row_id[[i]])
+      if (length(hit) == 1L) {
+        return(hit)
+      }
+    }
+    hit <- which(link_key == review_key[[i]])
+    if (length(hit) == 1L) hit else if (length(hit) > 1L) -1L else 0L
+  }, integer(1))
+  fields <- c(
+    "original_source", "imported_source", "historical_reviewer", "historical_linkage", "current_linkage",
+    "current_match_count", "linkage_status", "mutation_allowed"
+  )
+  for (field in fields) {
+    value <- rep(NA, nrow(reviews))
+    if (field %in% c("current_match_count")) value <- rep(NA_integer_, nrow(reviews))
+    if (field %in% c("mutation_allowed")) value <- rep(TRUE, nrow(reviews))
+    valid <- link_row > 0L
+    value[valid] <- historical_links[[field]][link_row[valid]]
+    ambiguous <- link_row < 0L
+    if (field %in% c("historical_linkage", "current_linkage", "linkage_status")) value[ambiguous] <- "ambiguous"
+    if (field == "mutation_allowed") value[ambiguous] <- FALSE
+    reviews[[field]] <- value
+  }
+  reviews$historical_mutation_allowed <- as.logical(reviews$mutation_allowed)
+  reviews$historical_mutation_allowed[is.na(reviews$historical_mutation_allowed)] <- FALSE
+  reviews
+}
+
+curation_app_historical_record_rows <- function(records, historical_links = NULL) {
+  records <- as.data.frame(records, stringsAsFactors = FALSE)
+  if (nrow(records) == 0L) {
+    return(records)
+  }
+  links <- curation_app_normalize_historical_links(historical_links)
+  records$historical_mutation_allowed <- TRUE
+  records$historical_badge <- rep("", nrow(records))
+  if (nrow(links) == 0L) {
+    return(records)
+  }
+  record_key <- curation_app_key_string(records$country, records$document_id)
+  link_key <- curation_app_key_string(links$country, links$document_id)
+  link_row <- vapply(seq_len(nrow(records)), function(i) {
+    hit <- which(link_key == record_key[[i]])
+    if (length(hit) == 1L) hit else if (length(hit) > 1L) -1L else 0L
+  }, integer(1))
+  fields <- c(
+    "original_source", "imported_source", "historical_reviewer", "historical_linkage", "current_linkage",
+    "current_match_count", "linkage_status", "mutation_allowed"
+  )
+  for (field in fields) {
+    value <- if (field == "current_match_count") rep(NA_integer_, nrow(records)) else rep(NA, nrow(records))
+    if (field == "mutation_allowed") value <- rep(TRUE, nrow(records))
+    valid <- link_row > 0L
+    value[valid] <- links[[field]][link_row[valid]]
+    ambiguous <- link_row < 0L
+    if (field %in% c("historical_linkage", "current_linkage", "linkage_status")) value[ambiguous] <- "ambiguous"
+    if (field == "mutation_allowed") value[ambiguous] <- FALSE
+    records[[field]] <- value
+  }
+  records$historical_mutation_allowed <- as.logical(records$mutation_allowed)
+  records$historical_mutation_allowed[is.na(records$historical_mutation_allowed)] <- FALSE
+  records$historical_badge <- vapply(seq_len(nrow(records)), function(i) {
+    badge <- curation_app_historical_badge(records[i, , drop = FALSE])
+    if (is.null(badge)) "" else as.character(badge)
+  }, character(1))
+  records
+}
+
+curation_app_historical_only_records <- function(
+  historical_links,
+  current_records = NULL,
+  reviews = NULL
+) {
+  links <- curation_app_normalize_historical_links(historical_links)
+  if (nrow(links) == 0L) {
+    return(curation_app_empty_records()[0, , drop = FALSE])
+  }
+  current <- if (is.null(current_records) || !is.data.frame(current_records)) {
+    character(0)
+  } else {
+    curation_app_key_string(current_records$country, current_records$document_id)
+  }
+  link_key <- curation_app_key_string(links$country, links$document_id)
+  is_historical_only <- !link_key %in% current | links$current_linkage == "historical_only" |
+    links$current_match_count == 0L
+  is_historical_only[is.na(is_historical_only)] <- FALSE
+  if (!any(is_historical_only)) {
+    return(curation_app_empty_records()[0, , drop = FALSE])
+  }
+  selected <- links[is_historical_only, , drop = FALSE]
+  template <- curation_app_empty_records()
+  template <- template[rep(NA_integer_, nrow(selected)), , drop = FALSE]
+  template$country <- selected$country
+  template$document_id <- selected$document_id
+  template$import_row_id <- selected$import_row_id
+  template$title <- "Historical review"
+  template$summary <- "Historical label; current record linkage is unresolved."
+  template$selected <- FALSE
+  template$decision <- NA_character_
+  template$note <- NA_character_
+  template$reviewed_at <- NA_character_
+  template$reviewer_id <- NA_character_
+  template$source <- NA_character_
+  review_rows <- curation_app_active_reviews(reviews)
+  if (nrow(review_rows) > 0L) {
+    review_rows$import_row_id <- if ("import_row_id" %in% names(review_rows)) {
+      as.character(review_rows$import_row_id)
+    } else {
+      rep(NA_character_, nrow(review_rows))
+    }
+    collapse_review_field <- function(values, hit) {
+      values <- as.character(values[hit])
+      values <- unique(values[!is.na(values) & nzchar(values)])
+      if (length(values) == 0L) NA_character_ else paste(values, collapse = " | ")
+    }
+    for (i in seq_len(nrow(selected))) {
+      hit <- integer(0)
+      if (!is.na(selected$import_row_id[[i]]) && nzchar(selected$import_row_id[[i]])) {
+        hit <- which(review_rows$import_row_id == selected$import_row_id[[i]])
+      }
+      if (length(hit) == 0L) {
+        hit <- which(
+          review_rows$country == selected$country[[i]] &
+            review_rows$document_id == selected$document_id[[i]]
+        )
+      }
+      if (length(hit) == 0L) next
+      template$decision[[i]] <- collapse_review_field(review_rows$decision, hit)
+      template$note[[i]] <- collapse_review_field(review_rows$note, hit)
+      template$reviewed_at[[i]] <- collapse_review_field(review_rows$reviewed_at, hit)
+      template$reviewer_id[[i]] <- collapse_review_field(review_rows$reviewer_id, hit)
+      template$source[[i]] <- collapse_review_field(review_rows$source, hit)
+    }
+  }
+  template <- curation_app_historical_record_rows(template, selected)
+  template
+}
+
+curation_app_historical_only_table <- function(
+  historical_links,
+  current_records = NULL,
+  reviews = NULL
+) {
+  rows <- curation_app_historical_only_records(historical_links, current_records, reviews)
+  if (nrow(rows) == 0L) {
+    return(reactable::reactable(data.frame(Note = "No historical-only labels are available."), pagination = FALSE))
+  }
+  shown <- rows[, intersect(
+    c(
+      "country", "document_id", "historical_badge", "historical_reviewer",
+      "historical_linkage", "current_linkage", "decision", "note", "reviewed_at",
+      "reviewer_id", "source"
+    ),
+    names(rows)
+  ), drop = FALSE]
+  columns <- list(
+    country = reactable::colDef(name = "Country", width = 90),
+    document_id = reactable::colDef(name = "Document", width = 160),
+    historical_badge = reactable::colDef(name = "Attribution / linkage", width = 300, html = TRUE),
+    historical_reviewer = reactable::colDef(name = "Reviewer", width = 160),
+    historical_linkage = reactable::colDef(name = "Historical status", width = 160),
+    current_linkage = reactable::colDef(name = "Current status", width = 160),
+    decision = reactable::colDef(name = "Repository decision", width = 150),
+    note = reactable::colDef(name = "Review note", width = 220),
+    reviewed_at = reactable::colDef(name = "Reviewed at", width = 180),
+    reviewer_id = reactable::colDef(name = "Repository reviewer", width = 180),
+    source = reactable::colDef(name = "Review source", width = 140)
+  )
+  reactable::reactable(
+    shown,
+    columns = columns[intersect(names(columns), names(shown))],
+    searchable = TRUE,
+    filterable = TRUE,
+    pagination = TRUE,
+    defaultPageSize = 25,
+    compact = TRUE,
+    highlight = TRUE
+  )
+}
+
+curation_app_historical_mutation_allowed <- function(
+  historical_links,
+  country,
+  document_id,
+  import_row_id = NULL
+) {
+  links <- curation_app_normalize_historical_links(historical_links)
+  if (nrow(links) == 0L) {
+    return(TRUE)
+  }
+  hit <- integer(0)
+  if (!is.null(import_row_id) && length(import_row_id) == 1L && !is.na(import_row_id) && nzchar(import_row_id)) {
+    hit <- which(links$import_row_id == as.character(import_row_id))
+  }
+  if (length(hit) == 0L) {
+    hit <- which(links$country == as.character(country) & links$document_id == as.character(document_id))
+  }
+  if (length(hit) != 1L) {
+    return(length(hit) == 0L)
+  }
+  isTRUE(links$mutation_allowed[[hit]])
+}
+
+curation_app_historical_badge <- function(row) {
+  if (is.data.frame(row)) {
+    if (nrow(row) == 0L) {
+      return(NULL)
+    }
+    row <- row[1L, , drop = FALSE]
+    get <- function(name, default = NULL) if (name %in% names(row)) row[[name]][[1L]] else default
+  } else if (is.list(row)) {
+    get <- function(name, default = NULL) row[[name]] %||% default
+  } else {
+    return(NULL)
+  }
+  original <- get("original_source")
+  imported <- get("imported_source")
+  reviewer <- get("historical_reviewer")
+  status <- get("linkage_status")
+  allowed <- isTRUE(get("mutation_allowed", TRUE))
+  if (all(vapply(list(original, imported, status), function(value) is.null(value) || is.na(value) || !nzchar(as.character(value)), logical(1)))) {
+    return(NULL)
+  }
+  source_text <- if (!is.null(original) && !is.na(original) && !is.null(imported) && !is.na(imported) &&
+    nzchar(as.character(original)) && nzchar(as.character(imported)) &&
+    !identical(as.character(original), as.character(imported))) {
+    paste0("original ", as.character(original), " · imported ", as.character(imported))
+  } else if (!is.null(imported) && !is.na(imported) && nzchar(as.character(imported))) {
+    paste0("source ", as.character(imported))
+  } else {
+    "historical"
+  }
+  status_text <- switch(as.character(status %||% "unverified"),
+    current_unique = "current match",
+    matched = "current match",
+    historical_only = "historical only",
+    ambiguous = "ambiguous",
+    pending = "pending",
+    unseen = "unseen",
+    `not_seen_in_returned_metadata` = "unseen",
+    unverified = "unverified",
+    as.character(status %||% "unverified")
+  )
+  label <- paste("Historical", source_text, status_text, sep = " · ")
+  if (!is.null(reviewer) && !is.na(reviewer) && nzchar(as.character(reviewer))) {
+    label <- paste(label, paste0("by ", as.character(reviewer)), sep = " · ")
+  }
+  if (!allowed) label <- paste(label, "read-only", sep = " · ")
+  htmltools::tags$span(
+    class = paste("curation-historical-badge", if (allowed) "is-actionable" else "is-unresolved"),
+    title = if (allowed) "Historical linkage is uniquely matched to the current record." else "Historical linkage is unresolved; current mutations are disabled.",
+    label
+  )
+}
+
 curation_app_normalize_reviews <- function(rows) {
   if (is.null(rows) || !is.data.frame(rows) || nrow(rows) == 0L) {
     return(curation_app_empty_reviews())
@@ -299,7 +627,9 @@ curation_app_merge_review_row <- function(rows, current) {
 
 curation_app_review_keys <- function(rows) {
   rows <- curation_app_normalize_reviews(rows)
-  if (nrow(rows) == 0L) return(character(0))
+  if (nrow(rows) == 0L) {
+    return(character(0))
+  }
   curation_app_key_string(rows$country, rows$document_id, rows$reviewer_id)
 }
 
@@ -315,7 +645,9 @@ curation_app_merge_reviews_preserving_pending <- function(
   local <- curation_app_normalize_reviews(local)
   incoming <- curation_app_normalize_reviews(incoming)
   pending_keys <- unique(as.character(pending_keys %||% character(0)))
-  if (nrow(incoming) == 0L) return(local)
+  if (nrow(incoming) == 0L) {
+    return(local)
+  }
   for (i in seq_len(nrow(incoming))) {
     row <- incoming[i, , drop = FALSE]
     key <- curation_app_key_string(row$country, row$document_id, row$reviewer_id)
@@ -335,7 +667,9 @@ curation_app_review_refresh_updates <- function(
   local <- curation_app_normalize_reviews(local)
   incoming <- curation_app_normalize_reviews(incoming)
   pending_keys <- unique(as.character(pending_keys %||% character(0)))
-  if (nrow(incoming) == 0L) return(list())
+  if (nrow(incoming) == 0L) {
+    return(list())
+  }
   updates <- list()
   local_keys <- curation_app_review_keys(local)
   for (i in seq_len(nrow(incoming))) {
@@ -524,6 +858,9 @@ curation_app_decision_cell <- function(source, reviewer_id, render_id = NULL) {
       var key = String(country) + '::' + String(id) + '::' + rid;
       var revision = cellInfo.row['review_revision'];
       var val = cellInfo.value;
+      var mutationAllowed = cellInfo.row['historical_mutation_allowed'];
+      var mutationBlocked = mutationAllowed === false || String(mutationAllowed).toLowerCase() === 'false' || mutationAllowed === 0;
+      if (mutationBlocked) return '<span class=\"curation-historical-readonly\" data-mutation-allowed=\"false\" title=\"Historical linkage is unresolved; current mutations are disabled.\">Historical linkage is unresolved; current mutations are disabled.</span>';
       if (window.__curationReviewState === undefined) window.__curationReviewState = {};
       if (window.__curationReviewRevision === undefined) window.__curationReviewRevision = {};
       if (!(key in window.__curationReviewState)) {
@@ -551,7 +888,7 @@ curation_app_decision_cell <- function(source, reviewer_id, render_id = NULL) {
       return '<div class=\"curation-decision-group\" data-review-id=\"' + attr(key) +
         '\" data-record-id=\"' + attr(id) + '\" data-country=\"' + attr(country) +
         '\" data-source=\"' + attr(src) + '\" data-reviewer=\"' + attr(rid) +
-        '\" data-revision=\"' + attr(revision) + '\"%s>' +
+        '\" data-revision=\"' + attr(revision) + '\" data-mutation-allowed=\"' + attr(mutationAllowed) + '\"%s>' +
         btn('keep','Keep','#1a9850') + btn('drop','Drop','#d73027') + btn('unsure','?','#fc8d59') + '</div>';
     }",
     js_literal(source),
@@ -569,6 +906,9 @@ curation_app_admin_decision_cell <- function() {
       var revision = cellInfo.row['review_revision'];
       var key = String(country) + '::' + String(id) + '::' + String(rid);
       var val = cellInfo.value;
+      var mutationAllowed = cellInfo.row['historical_mutation_allowed'];
+      var mutationBlocked = mutationAllowed === false || String(mutationAllowed).toLowerCase() === 'false' || mutationAllowed === 0;
+      if (mutationBlocked) return '<span class=\"curation-historical-readonly\" data-mutation-allowed=\"false\" title=\"Historical linkage is unresolved; current mutations are disabled.\">Historical linkage is unresolved; current mutations are disabled.</span>';
       if (window.__curationReviewState === undefined) window.__curationReviewState = {};
       if (!(key in window.__curationReviewState)) {
         window.__curationReviewState[key] = (val === null || val === undefined) ? null : val;
@@ -591,19 +931,24 @@ curation_app_admin_decision_cell <- function() {
       return '<div class=\"curation-decision-group\" data-admin=\"true\" data-review-id=\"' + attr(key) +
         '\" data-record-id=\"' + attr(id) + '\" data-country=\"' + attr(country) +
         '\" data-source=\"admin\" data-reviewer=\"' + attr(rid) +
-        '\" data-revision=\"' + attr(revision) + '\">' +
+        '\" data-revision=\"' + attr(revision) + '\" data-mutation-allowed=\"' + attr(mutationAllowed) + '\">' +
         btn('keep','Keep','#1a9850') + btn('drop','Drop','#d73027') + btn('unsure','?','#fc8d59') + '</div>';
     }"
   )
 }
 
-curation_app_admin_table <- function(rows) {
+curation_app_admin_table <- function(rows, historical_links = NULL) {
   rows <- curation_app_active_reviews(rows)
   if (nrow(rows) == 0L) {
     return(reactable::reactable(data.frame(Note = "No active reviews are available."), pagination = FALSE))
   }
+  rows <- curation_app_historical_review_rows(rows, historical_links)
   rows$review_revision <- as.integer(rows$revision)
   rows$decision <- as.character(rows$decision)
+  rows$historical_badge <- vapply(seq_len(nrow(rows)), function(i) {
+    badge <- curation_app_historical_badge(rows[i, , drop = FALSE])
+    if (is.null(badge)) "" else as.character(badge)
+  }, character(1))
   columns <- list(
     decision = reactable::colDef(
       name = "Review", sticky = "left", width = 160, sortable = FALSE,
@@ -613,9 +958,10 @@ curation_app_admin_table <- function(rows) {
     document_id = reactable::colDef(name = "Document", width = 150),
     reviewer_id = reactable::colDef(name = "Target reviewer", width = 160),
     source = reactable::colDef(name = "Source", width = 100),
-    revision = reactable::colDef(name = "Revision", width = 90, align = "center")
+    revision = reactable::colDef(name = "Revision", width = 90, align = "center"),
+    historical_badge = reactable::colDef(name = "Attribution / linkage", width = 300, html = TRUE)
   )
-  show <- c("decision", "country", "document_id", "reviewer_id", "source", "revision")
+  show <- c("decision", "country", "document_id", "reviewer_id", "source", "revision", "historical_badge")
   for (name in setdiff(names(rows), show)) columns[[name]] <- reactable::colDef(show = FALSE)
   reactable::reactable(
     rows[, unique(c(show, setdiff(names(rows), show))), drop = FALSE],
@@ -631,11 +977,12 @@ curation_app_admin_table <- function(rows) {
   )
 }
 
-curation_app_table <- function(data, reviews, config, source = "browse", blind = FALSE, reviewer_id, render_id = NULL) {
+curation_app_table <- function(data, reviews, config, source = "browse", blind = FALSE, reviewer_id, render_id = NULL, historical_links = NULL) {
   data <- as.data.frame(data, stringsAsFactors = FALSE)
   if (nrow(data) == 0L) {
     return(reactable::reactable(data.frame(Note = "No records match this view."), pagination = FALSE))
   }
+  data <- curation_app_historical_record_rows(data, historical_links)
   all_reviews <- curation_app_normalize_reviews(reviews)
   reviews <- curation_app_active_reviews(all_reviews)
   lookup <- stats::setNames(
@@ -670,7 +1017,8 @@ curation_app_table <- function(data, reviews, config, source = "browse", blind =
     kw_total = reactable::colDef(name = "Keywords", width = 90, align = "center"),
     selected = reactable::colDef(name = "Pre-selected", width = 120),
     selected_model = reactable::colDef(name = "Model", width = 100),
-    n_attachments = reactable::colDef(name = "Attachments", width = 100, align = "center")
+    n_attachments = reactable::colDef(name = "Attachments", width = 100, align = "center"),
+    historical_badge = reactable::colDef(name = "Attribution / linkage", width = 300, html = TRUE)
   )
   if (!has_model) cols$selected_model <- NULL
   if (isTRUE(blind)) {
@@ -768,9 +1116,11 @@ curation_app_single_record_ui <- function(row, config) {
 }
 
 curation_app_validate_logout_path <- function(logout_path) {
-  if (is.null(logout_path)) return(NULL)
+  if (is.null(logout_path)) {
+    return(NULL)
+  }
   if (!is.character(logout_path) || length(logout_path) != 1L ||
-      is.na(logout_path) || !grepl("^/[A-Za-z0-9._/-]+$", logout_path)) {
+    is.na(logout_path) || !grepl("^/[A-Za-z0-9._/-]+$", logout_path)) {
     curation_abort(
       "{.arg logout_path} must be an absolute local path containing only URL path characters.",
       class = "planscanR_error_curation_config"
@@ -1016,6 +1366,11 @@ curation_app_ui <- function(config, logout_path = NULL) {
         col_widths = c(7, 5)
       ),
       bslib$card(
+        bslib$card_header("Historical imported labels"),
+        shiny$helpText("Historical labels retain source and linkage attribution. Unresolved rows are read-only."),
+        reactable::reactableOutput("historical_overview_tbl")
+      ),
+      bslib$card(
         bslib$card_header(
           htmltools::div(
             class = "d-flex justify-content-between align-items-center",
@@ -1048,6 +1403,11 @@ curation_app_ui <- function(config, logout_path = NULL) {
         reactable::reactableOutput("review_tbl"),
         min_height = "520px",
         class = "curation-review-card"
+      ),
+      bslib$card(
+        bslib$card_header("Historical imported labels"),
+        shiny$helpText("Historical labels retain source and linkage attribution. Unresolved rows are read-only."),
+        reactable::reactableOutput("historical_review_tbl")
       ),
       shiny$uiOutput("admin_review_ui")
     ),
@@ -1196,8 +1556,10 @@ curation_app_read_snapshot <- function(store, scope, actor, version = NULL) {
     metadata = snapshot$metadata %||% if (payload_is_list) {
       payload$metadata
     } else {
-      attr(payload, "curation_snapshot_metadata", exact = TRUE)
-    } %||% list()
+      {
+        attr(payload, "curation_snapshot_metadata", exact = TRUE)
+      } %||% list()
+    }
   )
 }
 
@@ -1415,6 +1777,7 @@ curation_app_server <- function(input, output, session, context) {
   provider <- context$records_provider
   repository <- context$review_repository
   artifact_store <- context$artifact_store
+  historical_links <- context$historical_reviews %||% NULL
   curation_app_check_actor_resolver(context$actor_resolver)
   actor <- curation_resolve_actor(
     context$actor_resolver,
@@ -1435,17 +1798,21 @@ curation_app_server <- function(input, output, session, context) {
   if (!is.null(actor_probe)) {
     curation_app_check_actor_resolver(actor_probe)
     auth_timer <- shiny::reactiveTimer(60000, session)
-    shiny::observeEvent(auth_timer(), {
-      valid <- tryCatch(
-        curation_app_resolve_current_actor(
-          context, session, actor, resolver = actor_probe
-        ),
-        error = function(error) FALSE
-      )
-      if (isFALSE(valid) && is.function(session$close)) {
-        session$close()
-      }
-    }, ignoreInit = TRUE)
+    shiny::observeEvent(auth_timer(),
+      {
+        valid <- tryCatch(
+          curation_app_resolve_current_actor(
+            context, session, actor,
+            resolver = actor_probe
+          ),
+          error = function(error) FALSE
+        )
+        if (isFALSE(valid) && is.function(session$close)) {
+          session$close()
+        }
+      },
+      ignoreInit = TRUE
+    )
   }
 
   app_state <- context$app_state
@@ -1539,40 +1906,44 @@ curation_app_server <- function(input, output, session, context) {
   # expiry timer; a revoked session is closed before its repository read.
   if (!is.null(actor_probe)) {
     review_timer <- shiny::reactiveTimer(60000, session)
-    shiny::observeEvent(review_timer(), {
-      refresh_actor <- tryCatch(
-        curation_app_resolve_current_actor(
-          context, session, actor, resolver = actor_probe
-        ),
-        error = identity
-      )
-      if (inherits(refresh_actor, "error")) {
-        if (is.function(session$close)) session$close()
-        return()
-      }
-      incoming <- tryCatch(
-        curation_app_read_reviews(repository, scope, refresh_actor),
-        error = identity
-      )
-      if (inherits(incoming, "error")) {
-        shiny::showNotification(
-          paste0("Review refresh failed: ", conditionMessage(incoming)),
-          type = "warning", duration = 8
+    shiny::observeEvent(review_timer(),
+      {
+        refresh_actor <- tryCatch(
+          curation_app_resolve_current_actor(
+            context, session, actor,
+            resolver = actor_probe
+          ),
+          error = identity
         )
-        return()
-      }
-      local <- reviews()
-      pending <- pending_review_keys()
-      updates <- curation_app_review_refresh_updates(local, incoming, pending)
-      merged <- curation_app_merge_reviews_preserving_pending(local, incoming, pending)
-      if (!identical(local, merged)) reviews(merged)
-      if (length(updates) > 0L) {
-        try(
-          session$sendCustomMessage("curationReviewRefresh", list(updates = updates)),
-          silent = TRUE
+        if (inherits(refresh_actor, "error")) {
+          if (is.function(session$close)) session$close()
+          return()
+        }
+        incoming <- tryCatch(
+          curation_app_read_reviews(repository, scope, refresh_actor),
+          error = identity
         )
-      }
-    }, ignoreInit = TRUE)
+        if (inherits(incoming, "error")) {
+          shiny::showNotification(
+            paste0("Review refresh failed: ", conditionMessage(incoming)),
+            type = "warning", duration = 8
+          )
+          return()
+        }
+        local <- reviews()
+        pending <- pending_review_keys()
+        updates <- curation_app_review_refresh_updates(local, incoming, pending)
+        merged <- curation_app_merge_reviews_preserving_pending(local, incoming, pending)
+        if (!identical(local, merged)) reviews(merged)
+        if (length(updates) > 0L) {
+          try(
+            session$sendCustomMessage("curationReviewRefresh", list(updates = updates)),
+            silent = TRUE
+          )
+        }
+      },
+      ignoreInit = TRUE
+    )
   }
   model <- shiny::reactiveVal(curation_app_read_model(artifact_store, scope, actor, config))
   sample_info <- curation_app_read_sample(artifact_store, scope, actor)
@@ -1785,7 +2156,7 @@ curation_app_server <- function(input, output, session, context) {
     if (!isTRUE(initial_admin)) {
       return(reactable::reactable(data.frame(Note = "Administrator access is required."), pagination = FALSE))
     }
-    curation_app_admin_table(reviews())
+    curation_app_admin_table(reviews(), historical_links = historical_links)
   })
   current_reviewed_keys <- shiny::reactive({
     rv <- active_reviews()
@@ -1975,6 +2346,12 @@ curation_app_server <- function(input, output, session, context) {
     data <- curation_app_funnel(filtered(), config, context = funnel_context(), by_country = TRUE)
     reactable::reactable(data[, intersect(c("country", "stage", "n", "pct"), names(data)), drop = FALSE], groupBy = "country", compact = TRUE, pagination = FALSE)
   })
+  output$historical_overview_tbl <- reactable::renderReactable({
+    curation_app_historical_only_table(
+      historical_links,
+      current_records = records(), reviews = reviews()
+    )
+  })
 
   display_df <- shiny::reactive({
     data <- filtered()
@@ -2033,7 +2410,17 @@ curation_app_server <- function(input, output, session, context) {
         rows = display_rows
       )
     )
-    curation_app_table(data, reviews(), config, source = "browse", reviewer_id = reviewer_id, render_id = render_id)
+    curation_app_table(
+      data, reviews(), config,
+      source = "browse", reviewer_id = reviewer_id,
+      render_id = render_id, historical_links = historical_links
+    )
+  })
+  output$historical_review_tbl <- reactable::renderReactable({
+    curation_app_historical_only_table(
+      historical_links,
+      current_records = records(), reviews = reviews()
+    )
   })
 
   write_one <- function(country, document_id, decision, source, expected_revision = NULL) {
@@ -2046,6 +2433,12 @@ curation_app_server <- function(input, output, session, context) {
     if (!valid_record) {
       curation_abort(
         "The review event did not identify a record in the current snapshot.",
+        class = "planscanR_error_curation_repository"
+      )
+    }
+    if (!curation_app_historical_mutation_allowed(historical_links, country, document_id)) {
+      curation_abort(
+        "Historical linkage is unresolved; current mutations are disabled.",
         class = "planscanR_error_curation_repository"
       )
     }
@@ -2088,10 +2481,13 @@ curation_app_server <- function(input, output, session, context) {
       }
       key <- curation_review_key(country, document_id, reviewer_id)
     }
-    refreshed <- tryCatch({
-      refresh_actor <- current_actor()
-      curation_app_refresh_review(reviews(), repository, scope, key, refresh_actor)
-    }, error = function(refresh_error) refresh_error)
+    refreshed <- tryCatch(
+      {
+        refresh_actor <- current_actor()
+        curation_app_refresh_review(reviews(), repository, scope, key, refresh_actor)
+      },
+      error = function(refresh_error) refresh_error
+    )
     if (inherits(refreshed, "error")) {
       shiny::showNotification(
         paste0("The review changed in another session and could not be refreshed: ", conditionMessage(refreshed)),
@@ -2159,6 +2555,10 @@ curation_app_server <- function(input, output, session, context) {
       decision <- as.character(info$decision[[1L]])
       if (!decision %in% c("keep", "drop", "unsure")) {
         shiny::showNotification("Administrator write stopped because the decision was invalid.", type = "warning", duration = 8)
+        return()
+      }
+      if (!curation_app_historical_mutation_allowed(historical_links, country, document_id)) {
+        shiny::showNotification("Administrator write stopped because historical linkage is unresolved.", type = "warning", duration = 8)
         return()
       }
       key <- curation_review_key(country, document_id, target_reviewer)
@@ -2232,9 +2632,9 @@ curation_app_server <- function(input, output, session, context) {
   apply_bulk <- function(decision, output_id, data, source) {
     displayed <- input$review_bulk_display
     if (!is.list(displayed) || is.null(displayed$table_id) ||
-        !identical(as.character(displayed$table_id), output_id) ||
-        is.null(displayed$render_id) || length(displayed$render_id) != 1L ||
-        !identical(as.character(displayed$render_id), review_display_tokens[[output_id]])) {
+      !identical(as.character(displayed$table_id), output_id) ||
+      is.null(displayed$render_id) || length(displayed$render_id) != 1L ||
+      !identical(as.character(displayed$render_id), review_display_tokens[[output_id]])) {
       shiny::showNotification(
         "Bulk action stopped because the selected rows are no longer from the displayed table; refresh and try again.",
         type = "warning"
@@ -2285,6 +2685,18 @@ curation_app_server <- function(input, output, session, context) {
       return(invisible(NULL))
     }
     selected <- data[index, c("country", "document_id"), drop = FALSE]
+    allowed <- vapply(seq_len(nrow(selected)), function(i) {
+      curation_app_historical_mutation_allowed(
+        historical_links, selected$country[[i]], selected$document_id[[i]]
+      )
+    }, logical(1))
+    if (any(!allowed)) {
+      shiny::showNotification(
+        "Bulk action stopped because one or more selected rows have unresolved historical linkage.",
+        type = "warning"
+      )
+      return(invisible(NULL))
+    }
     expected <- vapply(
       displayed_keys,
       function(key) as.integer(displayed_revisions[[key]]),
@@ -2439,7 +2851,11 @@ curation_app_server <- function(input, output, session, context) {
         rows = display_rows
       )
     )
-    curation_app_table(data, reviews(), config, source = "random", blind = isTRUE(input$rnd_blind), reviewer_id = reviewer_id, render_id = render_id)
+    curation_app_table(
+      data, reviews(), config,
+      source = "random", blind = isTRUE(input$rnd_blind),
+      reviewer_id = reviewer_id, render_id = render_id, historical_links = historical_links
+    )
   })
   output$warm_status <- shiny::renderUI({
     if (is.null(config$translator)) shiny::helpText("Translation provider disabled.") else shiny::helpText("Translations are supplied by the injected provider.")
@@ -2481,7 +2897,8 @@ curation_app_server <- function(input, output, session, context) {
     # sample ID would turn an ordinary queue rebuild into an overwrite attempt
     # and would make restart recovery select the wrong queue.
     new_sample_id <- curation_app_new_sample_id(
-      scope, reviewer_id, queue, seed = input$rnd_seed
+      scope, reviewer_id, queue,
+      seed = input$rnd_seed
     )
     sample_payload <- list(
       sample_id = new_sample_id,
@@ -2533,7 +2950,7 @@ curation_app_server <- function(input, output, session, context) {
   }
   sr_set <- function(info) {
     if (!is.list(info) || is.null(info$decision) || is.null(info$country) ||
-        is.null(info$document_id) || is.null(info$reviewer) || is.null(info$revision)) {
+      is.null(info$document_id) || is.null(info$reviewer) || is.null(info$revision)) {
       shiny::showNotification(
         "Stepper write stopped because the displayed row and revision were not captured.",
         type = "warning", duration = 8
@@ -2554,7 +2971,7 @@ curation_app_server <- function(input, output, session, context) {
       return(invisible(NULL))
     }
     if (!identical(as.character(info$country[[1L]]), as.character(row$country[[1L]])) ||
-        !identical(as.character(info$document_id[[1L]]), as.character(row$document_id[[1L]]))) {
+      !identical(as.character(info$document_id[[1L]]), as.character(row$document_id[[1L]]))) {
       shiny::showNotification(
         "Stepper write stopped because the displayed row changed; review the current row and try again.",
         type = "warning", duration = 8
@@ -2705,6 +3122,8 @@ curation_app_server <- function(input, output, session, context) {
 #'   socket-expiry check. Mutation paths always use `actor_resolver`.
 #' @param logout_path Optional local POST path rendered as a visible Log out
 #'   control, for example `/app/logout`. It is absent by default.
+#' @param historical_reviews Optional data frame of imported historical review
+#'   linkage and attribution rows. Unresolved rows are shown read-only.
 #' @return A `shiny.appobj`.
 #' @export
 curation_app <- function(
@@ -2715,7 +3134,8 @@ curation_app <- function(
   actor_resolver,
   request = NULL,
   actor_probe = NULL,
-  logout_path = NULL
+  logout_path = NULL,
+  historical_reviews = NULL
 ) {
   curation_app_require_ui()
   curation_check_config(config)
@@ -2733,6 +3153,7 @@ curation_app <- function(
     actor_resolver = actor_resolver,
     actor_probe = actor_probe,
     logout_path = logout_path,
+    historical_reviews = historical_reviews,
     request = request,
     app_state = new.env(parent = emptyenv())
   )
@@ -2760,6 +3181,7 @@ run_curation <- function(
   launch.browser = interactive(),
   actor_probe = NULL,
   logout_path = NULL,
+  historical_reviews = NULL,
   ...
 ) {
   app <- curation_app(
@@ -2770,6 +3192,7 @@ run_curation <- function(
     actor_resolver = actor_resolver,
     actor_probe = actor_probe,
     logout_path = logout_path,
+    historical_reviews = historical_reviews,
     request = request
   )
   shiny::runApp(app, launch.browser = launch.browser, ...)

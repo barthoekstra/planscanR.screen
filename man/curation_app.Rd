@@ -12,7 +12,8 @@ curation_app(
   actor_resolver,
   request = NULL,
   actor_probe = NULL,
-  logout_path = NULL
+  logout_path = NULL,
+  historical_reviews = NULL
 )
 }
 \arguments{
@@ -35,6 +36,9 @@ socket-expiry check. Mutation paths always use \code{actor_resolver}.}
 
 \item{logout_path}{Optional local POST path rendered as a visible Log out
 control, for example \verb{/app/logout}. It is absent by default.}
+
+\item{historical_reviews}{Optional data frame of imported historical review
+linkage and attribution rows. Unresolved rows are shown read-only.}
 }
 \value{
 A \code{shiny.appobj}.
