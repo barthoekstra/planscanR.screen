@@ -611,7 +611,7 @@ acquisition_catalog_write_project_manifest <- function(catalog, source_ref_id,
       "f.verification_status, f.provenance, f.observed_at, f.legacy_path",
       "FROM acquisition_documents d LEFT JOIN acquisition_files f",
       "ON f.document_ref_id = d.document_ref_id WHERE d.source_ref_id = ?",
-      "ORDER BY d.ordinal, d.document_ref_id, f.observed_at, f.file_ref_id"
+      "ORDER BY d.ordinal, d.document_ref_id, f.observed_at DESC, f.file_ref_id"
     ),
     params = list(source_ref_id)
   )
@@ -619,6 +619,16 @@ acquisition_catalog_write_project_manifest <- function(catalog, source_ref_id,
   documents <- lapply(document_ids, function(document_id) {
     doc_rows <- rows[rows$document_ref_id == document_id, , drop = FALSE]
     first <- doc_rows[1L, , drop = FALSE]
+    preferred_sha <- vapply(seq_len(nrow(doc_rows)), function(i) {
+      sha <- as.character(doc_rows$sha256[[i]])
+      if (is.na(sha) || !identical(doc_rows$verification_status[[i]], "verified")) return(FALSE)
+      !any(
+        seq_len(i - 1L) > 0L &
+          !is.na(doc_rows$sha256[seq_len(i - 1L)]) &
+          tolower(doc_rows$sha256[seq_len(i - 1L)]) == tolower(sha) &
+          doc_rows$verification_status[seq_len(i - 1L)] == "verified"
+      )
+    }, logical(1))
     versions <- lapply(which(!is.na(doc_rows$file_ref_id)), function(i) {
       row <- doc_rows[i, , drop = FALSE]
       list(
@@ -626,6 +636,7 @@ acquisition_catalog_write_project_manifest <- function(catalog, source_ref_id,
         sha256 = if (is.na(row$sha256[[1L]])) NULL else as.character(row$sha256[[1L]]),
         size_bytes = if (is.na(row$size_bytes[[1L]])) NULL else as.numeric(row$size_bytes[[1L]]),
         observed_at = as.character(row$observed_at[[1L]]),
+        preferred_location = isTRUE(preferred_sha[[i]]),
         verification_status = as.character(row$verification_status[[1L]]),
         provenance = as.character(row$provenance[[1L]]),
         original_filename = basename(if (!is.na(row$legacy_path[[1L]])) {
@@ -872,7 +883,7 @@ acquisition_storage_enqueue_relocation <- function(
       target_type = "storage_root",
       target_ref_id = target_root_id,
       priority = 0L,
-      max_attempts = 3L,
+      max_attempts = 1000L,
       idempotency_key = paste0("relocation:", relocation_id),
       estimated_bytes = estimated_bytes
     )

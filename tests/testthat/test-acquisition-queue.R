@@ -183,6 +183,60 @@ test_that("retry state and shared host concurrency/cooldown survive reopen", {
   reopened$close()
 })
 
+test_that("verified migration batches do not consume the finite failure retry budget", {
+  catalog <- queue_catalog()
+  admin <- curation_actor("admin", roles = "admin")
+  source_root <- withr::local_tempdir()
+  target_root <- withr::local_tempdir()
+  acquisition_storage_register_root(catalog, "source", source_root, admin)
+  acquisition_storage_register_root(catalog, "target", target_root, admin, purpose = "staging")
+  relocation <- acquisition_storage_enqueue_relocation(catalog, "source", "target", admin,
+    estimated_bytes = 1024)
+  DBI::dbExecute(catalog$conn,
+    "UPDATE acquisition_jobs SET max_attempts = 1, available_at = ? WHERE job_id = ?",
+    params = list("2000-01-01T00:00:00Z", relocation$job_id))
+
+  progress <- acquisition_queue_claim(catalog, "worker-progress", lease_seconds = 60L)
+  continued <- acquisition_queue_complete(catalog, progress$job_id, progress$lease_token,
+    status = "retryable", error_category = "migration-batch-continue",
+    retry_after_seconds = 0)
+  expect_identical(continued$job_state, "retry_wait")
+  DBI::dbExecute(catalog$conn,
+    "UPDATE acquisition_jobs SET available_at = ? WHERE job_id = ?",
+    params = list("2000-01-01T00:00:00Z", relocation$job_id))
+
+  failure <- acquisition_queue_claim(catalog, "worker-failure", lease_seconds = 60L)
+  failed <- acquisition_queue_complete(catalog, failure$job_id, failure$lease_token,
+    status = "retryable", error_category = "copy-verification-failed",
+    retry_after_seconds = 0)
+  expect_identical(failed$job_state, "failed")
+  catalog$close()
+})
+
+test_that("expired migration leases consume the bounded failure retry budget", {
+  catalog <- queue_catalog()
+  admin <- curation_actor("admin", roles = "admin")
+  acquisition_storage_register_root(catalog, "source", withr::local_tempdir(), admin)
+  acquisition_storage_register_root(catalog, "target", withr::local_tempdir(), admin,
+    purpose = "staging")
+  relocation <- acquisition_storage_enqueue_relocation(catalog, "source", "target", admin,
+    estimated_bytes = 1024)
+  DBI::dbExecute(catalog$conn,
+    "UPDATE acquisition_jobs SET max_attempts = 2, available_at = ? WHERE job_id = ?",
+    params = list("2000-01-01T00:00:00Z", relocation$job_id))
+  first <- acquisition_queue_claim(catalog, "expired-worker-1", lease_seconds = 60L)
+  DBI::dbExecute(catalog$conn, "UPDATE acquisition_jobs SET lease_expires_at = ? WHERE job_id = ?",
+    params = list("2000-01-01T00:00:00Z", relocation$job_id))
+  second <- acquisition_queue_claim(catalog, "expired-worker-2", lease_seconds = 60L)
+  expect_true(second$ok)
+  DBI::dbExecute(catalog$conn, "UPDATE acquisition_jobs SET lease_expires_at = ? WHERE job_id = ?",
+    params = list("2000-01-01T00:00:00Z", relocation$job_id))
+  exhausted <- acquisition_queue_claim(catalog, "expired-worker-3", lease_seconds = 60L)
+  expect_false(exhausted$ok)
+  expect_identical(acquisition_queue_jobs(catalog)$state[[1L]], "failed")
+  catalog$close()
+})
+
 test_that("the worker runs injected handlers outside the transaction", {
   catalog <- queue_catalog()
   refs <- queue_source_document(catalog)

@@ -30,6 +30,7 @@ Suggests:
     DBI (>= 1.2.0),
     bslib,
     covr,
+    digest,
     filelock,
     htmltools,
     httpuv,

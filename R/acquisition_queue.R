@@ -181,7 +181,16 @@ acquisition_queue_recover_expired_connection <- function(conn, now) {
     # failures use exponential backoff; a dead worker should not add another
     # avoidable delay before a supervisor can restart it.
     retry_at <- now
-    exhausted <- as.integer(row$attempt_count[[1L]]) >= as.integer(row$max_attempts[[1L]])
+    exhausted <- if (identical(as.character(row$kind[[1L]]), "migrate_storage")) {
+      prior_failures <- as.integer(DBI::dbGetQuery(conn,
+        paste("SELECT COUNT(*) AS n FROM acquisition_job_attempts WHERE job_id = ?",
+        "AND outcome IN ('retryable', 'failed', 'expired')",
+          "AND COALESCE(error_category, '') <> 'migration-batch-continue'"),
+        params = list(as.character(row$job_id[[1L]])))$n[[1L]])
+      prior_failures + 1L >= as.integer(row$max_attempts[[1L]])
+    } else {
+      as.integer(row$attempt_count[[1L]]) >= as.integer(row$max_attempts[[1L]])
+    }
     next_state <- if (exhausted) "failed" else "retry_wait"
     DBI::dbExecute(
       conn,
@@ -526,7 +535,10 @@ acquisition_queue_claim <- function(
       paste(
         "SELECT j.* FROM acquisition_jobs j LEFT JOIN acquisition_host_limits h ON h.host = j.host",
         "WHERE j.kind IN (", kind_sql, ") AND j.state IN ('queued', 'retry_wait') AND j.available_at <= ?",
-        "AND j.attempt_count < j.max_attempts",
+        paste0("AND ((j.kind = 'migrate_storage' AND (SELECT COUNT(*) FROM acquisition_job_attempts a ",
+          "WHERE a.job_id = j.job_id AND a.outcome IN ('retryable', 'failed', 'expired') ",
+          "AND COALESCE(a.error_category, '') <> 'migration-batch-continue') < j.max_attempts) ",
+          "OR (j.kind <> 'migrate_storage' AND j.attempt_count < j.max_attempts))"),
         "AND ", if (controls_available) acquisition_controls_pause_guard_sql() else "1 = 1",
         "AND (j.host IS NULL OR ((h.cooldown_until IS NULL OR h.cooldown_until <= ?) AND h.active_count < h.max_concurrency))",
         "ORDER BY j.priority DESC, j.available_at, j.created_at, j.job_id LIMIT 1"
@@ -1068,7 +1080,24 @@ acquisition_queue_complete <- function(
     next_state <- effective_status
     completed_at <- now
     if (identical(status, "retryable") && !isTRUE(cancel_requested)) {
-      exhausted <- attempt_no >= as.integer(job$max_attempts[[1L]])
+      # A verified migration batch is successful progress, not a retryable
+      # failure. Continue durable bounded batches without consuming the finite
+      # failure retry budget; ordinary copy/network failures remain bounded.
+      batch_continuation <- identical(as.character(job$kind[[1L]]), "migrate_storage") &&
+        identical(error_category, "migration-batch-continue")
+      failure_attempts <- if (identical(as.character(job$kind[[1L]]), "migrate_storage")) {
+        as.integer(DBI::dbGetQuery(conn,
+          paste("SELECT COUNT(*) AS n FROM acquisition_job_attempts WHERE job_id = ?",
+            "AND outcome IN ('retryable', 'failed', 'expired')",
+            "AND COALESCE(error_category, '') <> 'migration-batch-continue'"),
+          params = list(job_id))$n[[1L]])
+      } else {
+        attempt_no
+      }
+      if (!batch_continuation && identical(as.character(job$kind[[1L]]), "migrate_storage")) {
+        failure_attempts <- failure_attempts + 1L
+      }
+      exhausted <- !batch_continuation && failure_attempts >= as.integer(job$max_attempts[[1L]])
       if (isTRUE(exhausted)) {
         next_state <- "failed"
       } else {
@@ -1500,14 +1529,23 @@ acquisition_queue_sidecar_download_update <- function(current, row, result) {
     url = as.character(url), local_path = as.character(result$local_path),
     status = as.character(result$download_status %||% "downloaded"),
     size_bytes = as.numeric(result$size_bytes), sha256 = as.character(result$sha256),
-    reason = NA_character_
+    reason = NA_character_,
+    filename = as.character(result$filename %||% basename(as.character(result$local_path))),
+    location = I(list(list(
+      storage_root_id = as.character(result$root_id),
+      relative_path = as.character(result$relative_path)
+    )))
   )
   if (length(matches) == 0L) {
     status <- dplyr::bind_rows(status, outcome)
   } else {
     for (name in names(outcome)) {
       if (!name %in% names(status)) status[[name]] <- outcome[[name]][rep(NA_integer_, nrow(status))]
-      status[[name]][matches[[1L]]] <- outcome[[name]][[1L]]
+      if (is.list(status[[name]])) {
+        status[[name]][matches[[1L]]] <- outcome[[name]][1L]
+      } else {
+        status[[name]][matches[[1L]]] <- outcome[[name]][[1L]]
+      }
     }
   }
   current$download_status <- list(status)
@@ -1645,8 +1683,8 @@ acquisition_queue_sync_sidecar <- function(catalog, document_ref_id, result, cac
 
 #' Reconcile a verified catalog file and synchronize its source sidecar.
 #'
-#' Only `planscan-cache` locations are resolved by this compact service. A
-#' legacy or unverified claim is reported without promoting its bytes.
+#' Registered storage roots are resolved through the catalog. A legacy or
+#' unverified claim is reported without promoting its bytes.
 #'
 #' @param catalog A catalog from [acquisition_catalog_open()].
 #' @param file_ref_id Registered file reference ID.
@@ -1676,10 +1714,17 @@ acquisition_queue_reconcile_file <- function(catalog, file_ref_id, cache_root = 
   if (!identical(as.character(row$verification_status[[1L]]), "verified")) {
     return(list(status = "blocked", error_category = "unverified-file-claim", error_message = "Legacy or unverified file claims cannot repair receipts."))
   }
-  if (!identical(as.character(row$root_id[[1L]]), "planscan-cache")) {
-    return(list(status = "blocked", error_category = "unknown-storage-root", error_message = "The file storage root is not mapped to the active cache."))
+  local_path <- tryCatch(
+    acquisition_storage_resolve_location(catalog, list(
+      storage_root_id = as.character(row$root_id[[1L]]),
+      relative_path = as.character(row$relative_path[[1L]])
+    ), must_exist = TRUE),
+    error = function(error) NA_character_
+  )
+  if (is.na(local_path)) {
+    return(list(status = "blocked", error_category = "unknown-storage-root",
+      error_message = "The verified file location is missing or its root is not registered."))
   }
-  local_path <- file.path(cache_root, as.character(row$relative_path[[1L]]))
   result <- list(
     status = "succeeded",
     document_ref_id = as.character(row$document_ref_id[[1L]]),
@@ -1690,6 +1735,7 @@ acquisition_queue_reconcile_file <- function(catalog, file_ref_id, cache_root = 
     sha256 = as.character(row$sha256[[1L]]),
     verification_status = "verified",
     provenance = as.character(row$provenance[[1L]]),
+    filename = basename(if (!is.na(row$legacy_path[[1L]])) as.character(row$legacy_path[[1L]]) else as.character(row$relative_path[[1L]])),
     url = as.character(row$attachment_url[[1L]]),
     download_status = "downloaded"
   )
@@ -1879,7 +1925,11 @@ acquisition_queue_default_download <- function(
       as.numeric(max_file_size_bytes) * 1024^2
     }
   }
-  transfer_cap_bytes <- min(as.numeric(configured_cap_bytes), reservation_cap_bytes)
+  content_addressed <- isTRUE(getOption("planscanR.content_addressed_downloads", FALSE))
+  # Content-addressed mode retains the legacy file while publishing a second
+  # copy. Bind the transfer ceiling to both copies in the held reservation.
+  reservation_transfer_cap <- reservation_cap_bytes / if (content_addressed) 2 else 1
+  transfer_cap_bytes <- min(as.numeric(configured_cap_bytes), reservation_transfer_cap)
   if (!is.finite(transfer_cap_bytes) || transfer_cap_bytes <= 0) {
     return(list(status = "blocked", error_category = "missing-transfer-cap", error_message = "A finite transfer cap bound to the storage reservation is required."))
   }
@@ -1898,6 +1948,10 @@ acquisition_queue_default_download <- function(
     "max_file_size_mb" %in% names(formals(download_fn))) {
     download_args$max_file_size_mb <- max_file_size_mb
   }
+  if ("content_addressed" %in% names(formals(download_fn))) {
+    download_args$content_addressed <- content_addressed
+    download_args$storage_root_id <- root_id
+  }
   result <- do.call(download_fn, download_args)
   if (!is.data.frame(result) || nrow(result) == 0L) {
     return(list(status = "retryable", error_category = "empty-download-result", error_message = "The downloader returned no result."))
@@ -1910,12 +1964,31 @@ acquisition_queue_default_download <- function(
     }
     size_bytes <- as.numeric(result$size_bytes[[1L]])
     sha256 <- as.character(result$sha256[[1L]])
+    source_local_path <- if ("source_local_path" %in% names(result)) as.character(result$source_local_path[[1L]]) else local_path
+    if (content_addressed) {
+      source_receipt <- tryCatch(
+        planscanR::reconcile_cached_download(
+          source_local_path, expected_size_bytes = size_bytes,
+          expected_sha256 = sha256, url = url, repair = FALSE
+        ), error = function(error) error
+      )
+      source_receipt_url <- tryCatch(
+        as.character(jsonlite::read_json(
+          planscanR:::download_receipt_path(source_local_path, sha256), simplifyVector = TRUE
+        )$url), error = function(error) NA_character_
+      )
+      if (inherits(source_receipt, "error") || !identical(source_receipt$status[[1L]], "verified") ||
+        is.na(source_receipt_url) || !identical(source_receipt_url, url)) {
+        return(list(status = "blocked", error_category = "source-url-receipt-mismatch",
+          error_message = "The retained legacy source receipt does not match this attachment URL."))
+      }
+    }
     receipt <- tryCatch(
       planscanR::reconcile_cached_download(
         local_path,
         expected_size_bytes = size_bytes,
         expected_sha256 = sha256,
-        url = url,
+        url = if (content_addressed) NA_character_ else url,
         repair = FALSE
       ),
       error = function(error) error
@@ -1935,16 +2008,29 @@ acquisition_queue_default_download <- function(
         receipt_status = as.character(receipt$status[[1L]])
       ))
     }
+    location <- if (content_addressed && "location" %in% names(result)) result$location[[1L]] else NULL
+    publication_root_id <- if (is.list(location) && !is.null(location$storage_root_id)) {
+      as.character(location$storage_root_id)
+    } else {
+      root_id
+    }
+    publication_relative_path <- if (is.list(location) && !is.null(location$relative_path)) {
+      as.character(location$relative_path)
+    } else {
+      planscanR::storage_relative_path(local_path, cache_root)
+    }
     publication <- list(
       status = "succeeded",
       document_ref_id = document_ref_id,
-      root_id = root_id,
-      relative_path = planscanR::storage_relative_path(local_path, cache_root),
+      root_id = publication_root_id,
+      relative_path = publication_relative_path,
       local_path = local_path,
       size_bytes = size_bytes,
       sha256 = sha256,
       verification_status = "verified",
       provenance = "planscanR-download",
+      legacy_path = if (content_addressed) planscanR::storage_relative_path(source_local_path, cache_root) else NULL,
+      filename = if (content_addressed && "filename" %in% names(result)) as.character(result$filename[[1L]]) else basename(local_path),
       url = url,
       download_status = if (identical(status, "exists")) "cached" else "downloaded",
       receipt_status = as.character(receipt$status[[1L]])
@@ -2060,11 +2146,7 @@ acquisition_queue_default_discover <- function(job, catalog) {
 }
 
 acquisition_queue_default_migrate_storage <- function(job, catalog) {
-  list(
-    status = "blocked",
-    error_category = "storage-relocation-handler-required",
-    error_message = "Storage relocation is durable and queued; configure an authorized migration handler to copy and verify files."
-  )
+  acquisition_storage_migrate_batch(job, catalog, batch_size = 25L)
 }
 
 #' Run supervised acquisition workers outside Shiny.
