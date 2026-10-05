@@ -33,6 +33,7 @@ Suggests:
     filelock,
     htmltools,
     httpuv,
+    jsonlite,
     knitr,
     openssl,
     parsnip,

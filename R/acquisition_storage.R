@@ -456,6 +456,172 @@ acquisition_storage_roots <- function(catalog, active = NULL) {
   if (length(params) == 0L) DBI::dbGetQuery(conn, sql) else DBI::dbGetQuery(conn, sql, params = params)
 }
 
+#' Resolve a catalog storage location on this machine
+#'
+#' Portable catalog locations contain only a stable storage-root ID and a
+#' relative path. This helper supplies the machine-local root paths to the
+#' planscanR containment resolver. Legacy absolute and cache-relative paths are
+#' also accepted while older sidecars and indexes are being adopted.
+#'
+#' @param catalog Acquisition catalog.
+#' @param location Portable location list or legacy character path.
+#' @param must_exist Require the target to exist.
+#' @return Canonical absolute path below a registered root.
+#' @export
+acquisition_storage_resolve_location <- function(catalog, location,
+                                                 must_exist = FALSE) {
+  conn <- acquisition_catalog_connection(catalog)
+  roots <- DBI::dbGetQuery(
+    conn,
+    "SELECT root_id, root_path FROM acquisition_storage_roots"
+  )
+  root_paths <- stats::setNames(as.character(roots$root_path), roots$root_id)
+  planscanR::storage_resolve_location(
+    location,
+    roots = root_paths,
+    must_exist = must_exist
+  )
+}
+
+acquisition_storage_legacy_location <- function(catalog, path) {
+  if (is.null(path) || length(path) != 1L || is.na(path) || !nzchar(path)) {
+    return(NULL)
+  }
+  roots <- acquisition_storage_roots(catalog)
+  if (grepl("^(/|[A-Za-z]:[/\\\\]|\\\\\\\\)", path)) {
+    for (i in seq_len(nrow(roots))) {
+      relative <- tryCatch(
+        planscanR::storage_relative_path(path, roots$root_path[[i]]),
+        error = function(error) NULL
+      )
+      if (!is.null(relative)) {
+        return(list(storage_root_id = as.character(roots$root_id[[i]]), relative_path = relative))
+      }
+    }
+    cache_root <- tryCatch(planscanR::cache_dir_default(), error = function(error) NULL)
+    if (!is.null(cache_root)) {
+      relative <- tryCatch(planscanR::storage_relative_path(path, cache_root), error = function(error) NULL)
+      if (!is.null(relative)) return(list(storage_root_id = "cache", relative_path = relative))
+    }
+    return(NULL)
+  }
+  # The legacy sidecar contract stores cache-root-relative paths. Validate
+  # them before including them in a portable manifest.
+  relative <- tryCatch(
+    planscanR::storage_relative_path(path, planscanR::cache_dir_default()),
+    error = function(error) NULL
+  )
+  if (is.null(relative)) NULL else list(storage_root_id = "cache", relative_path = relative)
+}
+
+#' Write a portable manifest for one catalog source/project
+#'
+#' The current catalog models a project as its stable `source_ref_id`; it does
+#' not create a second project UUID. Each logical attachment keeps its
+#' `document_ref_id`, and each registered file claim is emitted as a version
+#' claim identified by its actual `file_ref_id` and content SHA-256. The
+#' manifest contains no machine-specific absolute storage paths.
+#'
+#' @param catalog Acquisition catalog.
+#' @param source_ref_id Stable source/project ID.
+#' @param path Optional output path. Defaults to
+#'   `projects/<source_ref_id>/manifest.json` beside the catalog database.
+#' @return The manifest list, invisibly carrying its written path as an
+#'   attribute.
+#' @export
+acquisition_catalog_write_project_manifest <- function(catalog, source_ref_id,
+                                                       path = NULL) {
+  conn <- acquisition_catalog_connection(catalog)
+  source_ref_id <- acquisition_catalog_scalar_character(source_ref_id, "source_ref_id")
+  source <- acquisition_catalog_one(
+    conn,
+    "SELECT * FROM acquisition_sources WHERE source_ref_id = ?",
+    list(source_ref_id)
+  )
+  if (is.null(source)) {
+    acquisition_catalog_abort("The source/project ID is not present in the catalog.")
+  }
+  rows <- DBI::dbGetQuery(
+    conn,
+    paste(
+      "SELECT d.document_ref_id, d.native_attachment_id, d.attachment_key,",
+      "d.attachment_url, d.section, d.ordinal, d.identity_status, d.legacy_local_path,",
+      "f.file_ref_id, f.root_id, f.relative_path, f.sha256, f.size_bytes,",
+      "f.verification_status, f.provenance, f.observed_at, f.legacy_path",
+      "FROM acquisition_documents d LEFT JOIN acquisition_files f",
+      "ON f.document_ref_id = d.document_ref_id WHERE d.source_ref_id = ?",
+      "ORDER BY d.ordinal, d.document_ref_id, f.observed_at, f.file_ref_id"
+    ),
+    params = list(source_ref_id)
+  )
+  document_ids <- unique(as.character(rows$document_ref_id))
+  documents <- lapply(document_ids, function(document_id) {
+    doc_rows <- rows[rows$document_ref_id == document_id, , drop = FALSE]
+    first <- doc_rows[1L, , drop = FALSE]
+    versions <- lapply(which(!is.na(doc_rows$file_ref_id)), function(i) {
+      row <- doc_rows[i, , drop = FALSE]
+      list(
+        version_id = as.character(row$file_ref_id[[1L]]),
+        sha256 = if (is.na(row$sha256[[1L]])) NULL else as.character(row$sha256[[1L]]),
+        size_bytes = if (is.na(row$size_bytes[[1L]])) NULL else as.numeric(row$size_bytes[[1L]]),
+        observed_at = as.character(row$observed_at[[1L]]),
+        verification_status = as.character(row$verification_status[[1L]]),
+        provenance = as.character(row$provenance[[1L]]),
+        original_filename = basename(if (!is.na(row$legacy_path[[1L]])) {
+          as.character(row$legacy_path[[1L]])
+        } else if (!is.na(first$legacy_local_path[[1L]])) {
+          as.character(first$legacy_local_path[[1L]])
+        } else {
+          as.character(row$relative_path[[1L]])
+        }),
+        location = list(
+          storage_root_id = as.character(row$root_id[[1L]]),
+          relative_path = as.character(row$relative_path[[1L]])
+        )
+      )
+    })
+    list(
+      document_id = as.character(first$document_ref_id[[1L]]),
+      native_attachment_id = if (is.na(first$native_attachment_id[[1L]])) NULL else as.character(first$native_attachment_id[[1L]]),
+      attachment_key = as.character(first$attachment_key[[1L]]),
+      attachment_url = if (is.na(first$attachment_url[[1L]])) NULL else as.character(first$attachment_url[[1L]]),
+      section = if (is.na(first$section[[1L]])) NULL else as.character(first$section[[1L]]),
+      identity_status = as.character(first$identity_status[[1L]]),
+      legacy_location = acquisition_storage_legacy_location(
+        catalog, as.character(first$legacy_local_path[[1L]])
+      ),
+      versions = versions
+    )
+  })
+  manifest <- list(
+    schema = "planscanR.acquisition.project-manifest.v1",
+    manifest_version = 1L,
+    project_id = source_ref_id,
+    source_references = list(list(
+      source_ref_id = source_ref_id,
+      country = as.character(source$country[[1L]]),
+      portal = as.character(source$portal[[1L]]),
+      native_project_id = as.character(source$native_project_id[[1L]]),
+      source_url = if (is.na(source$source_url[[1L]])) NULL else as.character(source$source_url[[1L]])
+    )),
+    documents = documents
+  )
+  if (is.null(path)) {
+    path <- file.path(dirname(catalog$path), "projects", source_ref_id, "manifest.json")
+  }
+  path <- acquisition_storage_scalar(path, "path")
+  dir.create(dirname(path), recursive = TRUE, showWarnings = FALSE)
+  if (!requireNamespace("jsonlite", quietly = TRUE)) {
+    acquisition_storage_abort("Package {.pkg jsonlite} is required to write project manifests.")
+  }
+  jsonlite::write_json(
+    manifest, path, auto_unbox = TRUE, pretty = TRUE,
+    null = "null", na = "null"
+  )
+  attr(manifest, "path") <- normalizePath(path, winslash = "/", mustWork = TRUE)
+  invisible(manifest)
+}
+
 #' Append a versioned acquisition setting.
 #' @param catalog Acquisition catalog.
 #' @param key Setting key.
