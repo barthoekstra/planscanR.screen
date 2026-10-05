@@ -13,17 +13,18 @@ acquisition_queue_enqueue(
   priority = 0L,
   max_attempts = 3L,
   delay_seconds = 0,
-  idempotency_key = NULL
+  idempotency_key = NULL,
+  estimated_bytes = NULL
 )
 }
 \arguments{
 \item{catalog}{A catalog from \code{\link[=acquisition_catalog_open]{acquisition_catalog_open()}}.}
 
-\item{kind}{\code{discover} or \code{download}.}
+\item{kind}{\code{discover}, \code{download}, \code{migrate_storage}, or \code{ingest}.}
 
-\item{target_type}{\code{source}, \code{document}, or \code{file}.}
+\item{target_type}{\code{source}, \code{document}, \code{file}, or \code{storage_root}.}
 
-\item{target_ref_id}{Persisted source, document, or file reference ID.}
+\item{target_ref_id}{Persisted source, document, file, or storage-root ID.}
 
 \item{host}{Optional shared host throttle key.}
 
@@ -35,11 +36,15 @@ acquisition_queue_enqueue(
 
 \item{idempotency_key}{Optional caller key.  The persisted target identity
 remains unique even when a caller key is supplied.}
+
+\item{estimated_bytes}{Optional transfer-size estimate used by storage
+reservations.}
 }
 \value{
 A list containing \code{job_id} and \code{status}.
 }
 \description{
-Repeating the same \verb{(kind, target_type, target_ref_id)} is idempotent.  The
-target must already be an identity in the acquisition catalog.
+Repeating the same target is idempotent for discovery and download jobs;
+relocation jobs use their source/target idempotency key. The target must
+already be an identity in the acquisition catalog.
 }

@@ -4,6 +4,7 @@
 # and file work belongs to the worker callback, after a claim has committed.
 
 acquisition_queue_default_host_concurrency <- 2L
+acquisition_queue_default_job_kinds <- c("discover", "download", "migrate_storage")
 
 acquisition_queue_abort <- function(message, class = "planscanR_error_acquisition_queue") {
   acquisition_catalog_abort(message, class = class)
@@ -236,7 +237,7 @@ acquisition_queue_enqueue_connection <- function(
   kind <- acquisition_catalog_scalar_character(kind, "kind")
   target_type <- acquisition_catalog_scalar_character(target_type, "target_type")
   target_ref_id <- acquisition_catalog_scalar_character(target_ref_id, "target_ref_id")
-  if (!kind %in% c("discover", "download", "migrate_storage")) {
+  if (!kind %in% c("discover", "download", "migrate_storage", "ingest")) {
     acquisition_queue_abort("Unsupported queue kind.")
   }
   if (!target_type %in% c("source", "document", "file", "storage_root")) {
@@ -347,7 +348,7 @@ acquisition_queue_enqueue_connection <- function(
 #' already be an identity in the acquisition catalog.
 #'
 #' @param catalog A catalog from [acquisition_catalog_open()].
-#' @param kind `discover`, `download`, or `migrate_storage`.
+#' @param kind `discover`, `download`, `migrate_storage`, or `ingest`.
 #' @param target_type `source`, `document`, `file`, or `storage_root`.
 #' @param target_ref_id Persisted source, document, file, or storage-root ID.
 #' @param host Optional shared host throttle key.
@@ -375,8 +376,8 @@ acquisition_queue_enqueue <- function(
   kind <- acquisition_catalog_scalar_character(kind, "kind")
   target_type <- acquisition_catalog_scalar_character(target_type, "target_type")
   target_ref_id <- acquisition_catalog_scalar_character(target_ref_id, "target_ref_id")
-  if (!kind %in% c("discover", "download", "migrate_storage")) {
-    acquisition_queue_abort("{.arg kind} must be `discover`, `download`, or `migrate_storage`.")
+  if (!kind %in% c("discover", "download", "migrate_storage", "ingest")) {
+    acquisition_queue_abort("{.arg kind} must be `discover`, `download`, `migrate_storage`, or `ingest`.")
   }
   if (!target_type %in% c("source", "document", "file", "storage_root")) {
     acquisition_queue_abort("{.arg target_type} must be `source`, `document`, `file`, or `storage_root`.")
@@ -497,9 +498,18 @@ acquisition_queue_recover <- function(catalog) {
 #' @return A claim row with `ok`, `job_id`, `attempt_no`, `lease_token`, and
 #'   job fields, or `ok = FALSE` when no claim is available.
 #' @export
-acquisition_queue_claim <- function(catalog, worker_id, lease_seconds = 300L) {
+acquisition_queue_claim <- function(
+  catalog,
+  worker_id,
+  lease_seconds = 300L,
+  kinds = acquisition_queue_default_job_kinds
+) {
   worker_id <- acquisition_catalog_scalar_character(worker_id, "worker_id")
   lease_seconds <- acquisition_catalog_scalar_integer(lease_seconds, "lease_seconds", lower = 1L, upper = 604800L)
+  if (!is.character(kinds) || length(kinds) == 0L || anyNA(kinds) ||
+    any(!kinds %in% c("discover", "download", "migrate_storage", "ingest"))) {
+    acquisition_queue_abort("{.arg kinds} must contain supported acquisition job kinds.")
+  }
   # ACQ-2b controls are persisted in the same catalog.  Creating the small
   # control schema here keeps a fresh worker compatible with a catalog that
   # has not yet been opened by the dashboard.
@@ -510,17 +520,18 @@ acquisition_queue_claim <- function(catalog, worker_id, lease_seconds = 300L) {
     acquisition_queue_insert_missing_host_limits(conn, now)
     acquisition_queue_recover_expired_connection(conn, now)
     acquisition_queue_sync_host_counts(conn, now)
+    kind_sql <- paste(rep("?", length(kinds)), collapse = ", ")
     candidate <- acquisition_catalog_one(
       conn,
       paste(
         "SELECT j.* FROM acquisition_jobs j LEFT JOIN acquisition_host_limits h ON h.host = j.host",
-        "WHERE j.state IN ('queued', 'retry_wait') AND j.available_at <= ?",
+        "WHERE j.kind IN (", kind_sql, ") AND j.state IN ('queued', 'retry_wait') AND j.available_at <= ?",
         "AND j.attempt_count < j.max_attempts",
         "AND ", if (controls_available) acquisition_controls_pause_guard_sql() else "1 = 1",
         "AND (j.host IS NULL OR ((h.cooldown_until IS NULL OR h.cooldown_until <= ?) AND h.active_count < h.max_concurrency))",
         "ORDER BY j.priority DESC, j.available_at, j.created_at, j.job_id LIMIT 1"
       ),
-      list(now, now)
+      c(as.list(kinds), list(now, now))
     )
     if (is.null(candidate)) {
       return(list(ok = FALSE, status = "empty"))
@@ -670,6 +681,177 @@ acquisition_queue_result_has_verified_file <- function(result) {
     value <- result[[name]]
     length(value) == 1L && !is.na(value) && nzchar(as.character(value))
   }, logical(1)))
+}
+
+acquisition_queue_ingestion_file <- function(catalog, file_ref_id) {
+  conn <- acquisition_catalog_connection(catalog)
+  acquisition_catalog_one(
+    conn,
+    paste(
+      "SELECT f.*, d.document_ref_id, d.attachment_url, d.source_ref_id,",
+      "s.country, s.portal, s.native_project_id",
+      "FROM acquisition_files f",
+      "JOIN acquisition_documents d ON d.document_ref_id = f.document_ref_id",
+      "JOIN acquisition_sources s ON s.source_ref_id = d.source_ref_id",
+      "WHERE f.file_ref_id = ?"
+    ),
+    list(file_ref_id)
+  )
+}
+
+acquisition_queue_file_path <- function(catalog, row) {
+  root_id <- as.character(row$root_id[[1L]])
+  if (identical(root_id, "planscan-cache")) {
+    root <- planscanR::cache_dir_default()
+  } else {
+    registered <- acquisition_catalog_one(
+      acquisition_catalog_connection(catalog),
+      "SELECT root_path FROM acquisition_storage_roots WHERE root_id = ? AND active = 1",
+      list(root_id)
+    )
+    if (is.null(registered)) {
+      return(NULL)
+    }
+    root <- planscanR::storage_root_validate(as.character(registered$root_path[[1L]]), writable = TRUE)
+  }
+  path <- planscanR::storage_path(root, as.character(row$relative_path[[1L]]))
+  attr(path, "cache_root") <- root
+  path
+}
+
+acquisition_queue_verify_ingestion_file <- function(catalog, row) {
+  if (!identical(as.character(row$verification_status[[1L]]), "verified") ||
+    is.na(row$sha256[[1L]]) || !nzchar(as.character(row$sha256[[1L]]))) {
+    return(list(ok = FALSE, status = "blocked", error = "The catalog file claim is not verified."))
+  }
+  path <- acquisition_queue_file_path(catalog, row)
+  if (is.null(path) || !file.exists(path)) {
+    return(list(ok = FALSE, status = "blocked", error = "The verified file path is missing."))
+  }
+  if (!requireNamespace("openssl", quietly = TRUE)) {
+    return(list(ok = FALSE, status = "blocked", error = "The openssl package is required to recheck file content."))
+  }
+  observed <- paste0(openssl::sha256(readBin(path, "raw", n = file.info(path)$size)))
+  expected <- paste0(row$sha256[[1L]])
+  if (!identical(tolower(observed), tolower(expected))) {
+    return(list(ok = FALSE, status = "blocked", error = "The file content no longer matches its immutable verified digest."))
+  }
+  receipt <- tryCatch(
+    planscanR::reconcile_cached_download(
+      path,
+      expected_sha256 = expected,
+      url = as.character(row$attachment_url[[1L]]),
+      repair = FALSE
+    ),
+    error = function(error) error
+  )
+  if (inherits(receipt, "error")) {
+    return(list(ok = FALSE, status = "blocked", error = conditionMessage(receipt)))
+  }
+  if (!is.list(receipt) && !is.data.frame(receipt)) {
+    return(list(ok = FALSE, status = "blocked", error = "The file receipt verifier returned no receipt."))
+  }
+  receipt_status <- as.character(receipt$status[[1L]])
+  receipt_sha <- if (!is.null(receipt$sha256)) paste0(receipt$sha256[[1L]]) else expected
+  if (!identical(receipt_status, "verified") || !identical(tolower(receipt_sha), tolower(expected))) {
+    return(list(ok = FALSE, status = "blocked", error = "The current file receipt does not verify the catalog digest."))
+  }
+  list(ok = TRUE, path = path, root = attr(path, "cache_root"), sha256 = observed)
+}
+
+#' Enqueue ingestion for one verified immutable file version.
+#'
+#' The file and its current leaf receipt are checked before a durable job is
+#' created. Repeated requests for the same file version and digest replay the
+#' existing job.
+#'
+#' @param catalog An acquisition catalog.
+#' @param file_ref_id Registered file reference.
+#' @param version_id Optional immutable version identity; defaults to the file
+#'   reference and may not differ from it in the current catalog schema.
+#' @param priority Queue priority.
+#' @param max_attempts Maximum attempts.
+#' @return A durable queue job reference.
+#' @export
+acquisition_queue_enqueue_ingestion <- function(
+  catalog, file_ref_id, version_id = NULL, priority = 0L,
+  max_attempts = 3L
+) {
+  file_ref_id <- acquisition_catalog_scalar_character(file_ref_id, "file_ref_id")
+  version_id <- if (is.null(version_id)) file_ref_id else acquisition_catalog_scalar_character(version_id, "version_id")
+  if (!identical(version_id, file_ref_id)) {
+    acquisition_queue_abort("{.arg version_id} must identify the registered immutable file version.")
+  }
+  row <- acquisition_queue_ingestion_file(catalog, file_ref_id)
+  if (is.null(row)) acquisition_queue_abort("The ingestion file reference does not exist.")
+  verified <- acquisition_queue_verify_ingestion_file(catalog, row)
+  if (!isTRUE(verified$ok)) {
+    acquisition_queue_abort(verified$error, class = "planscanR_error_acquisition_queue_unverified")
+  }
+  key <- paste("ingest", file_ref_id, version_id, verified$sha256, sep = ":")
+  acquisition_queue_enqueue(
+    catalog,
+    kind = "ingest", target_type = "file", target_ref_id = file_ref_id,
+    priority = priority, max_attempts = max_attempts, idempotency_key = key
+  )
+}
+
+acquisition_queue_default_ingest <- function(
+  job, catalog, ingest_fn = NULL, embedding_model = NULL
+) {
+  if (!is.function(ingest_fn)) {
+    return(list(status = "blocked", error_category = "missing-ingestion-handler", error_message = "Supply an injected planscanR.RAG ingestion callback."))
+  }
+  file_ref_id <- as.character(job$target_ref_id)
+  row <- acquisition_queue_ingestion_file(catalog, file_ref_id)
+  if (is.null(row)) {
+    return(list(status = "blocked", error_category = "missing-file-reference", error_message = "The persisted file reference was not found."))
+  }
+  verified <- acquisition_queue_verify_ingestion_file(catalog, row)
+  if (!isTRUE(verified$ok)) {
+    return(list(status = "blocked", error_category = "verified-file-check", error_message = verified$error))
+  }
+  if (!isTRUE(job$lease_guard())) {
+    return(list(status = "retryable", error_category = "lease-stale", error_message = "The ingestion lease expired before the handler call."))
+  }
+  source_ref_id <- as.character(row$source_ref_id[[1L]])
+  file_path <- verified$path
+  result <- tryCatch(
+    ingest_fn(
+      file_path = file_path,
+      sha256 = verified$sha256,
+      document_id = source_ref_id,
+      country = as.character(row$country[[1L]]),
+      version_id = file_ref_id,
+      cache_dir = verified$root,
+      embedding_model = embedding_model,
+      lease_guard = job$lease_guard,
+      source_ref_id = source_ref_id,
+      document_ref_id = as.character(row$document_ref_id[[1L]]),
+      portal = as.character(row$portal[[1L]]),
+      native_project_id = as.character(row$native_project_id[[1L]])
+    ),
+    error = function(error) list(status = "retryable", error = conditionMessage(error))
+  )
+  if (!is.list(result) || is.null(result$status) ||
+    !as.character(result$status[[1L]]) %in% c("succeeded", "retryable", "blocked", "failed", "cancelled")) {
+    return(list(status = "retryable", error_category = "invalid-ingestion-result", error_message = "The ingestion callback returned no supported status."))
+  }
+  status <- as.character(result$status[[1L]])
+  if (identical(status, "succeeded") && !isTRUE(job$lease_guard())) {
+    return(list(status = "retryable", error_category = "lease-stale", error_message = "The ingestion lease expired before its result could be accepted."))
+  }
+  list(
+    status = status,
+    file_ref_id = file_ref_id,
+    version_id = file_ref_id,
+    sha256 = verified$sha256,
+    size_bytes = as.numeric(row$size_bytes[[1L]]),
+    ingestion_result = result$result %||% NULL,
+    provenance = result$provenance %||% NULL,
+    error_category = result$error_category %||% if (identical(status, "retryable")) "ingestion-retryable" else NULL,
+    error_message = result$error %||% result$error_message %||% NULL
+  )
 }
 
 acquisition_queue_register_result_documents <- function(conn, job, result) {
@@ -1896,8 +2078,11 @@ acquisition_queue_default_migrate_storage <- function(job, catalog) {
 #' @param worker_id Stable process identity.
 #' @param max_jobs Maximum number of jobs to process; defaults to one.
 #' @param lease_seconds Lease duration for each claim.
-#' @param handlers Optional named list with `discover`, `download`, and/or
-#'   `migrate_storage` functions.
+#' @param handlers Optional named list with queue handlers.
+#' @param job_kinds Job kinds eligible for this worker. Defaults to discovery,
+#'   download, and storage migration; ingestion requires an explicit worker.
+#' @param ingest_fn Optional injected RAG `ingest_verified_file` callback.
+#' @param embedding_model Optional model identifier passed to `ingest_fn`.
 #' @param poll_seconds Optional delay after an empty claim before returning.
 #' @param lock_timeout Download publication lock timeout in seconds.
 #' @return A list of worker outcomes, one per claimed job.
@@ -1909,7 +2094,10 @@ acquisition_worker_run <- function(
   lease_seconds = 300L,
   handlers = NULL,
   poll_seconds = 0,
-  lock_timeout = 60
+  lock_timeout = 60,
+  job_kinds = acquisition_queue_default_job_kinds,
+  ingest_fn = NULL,
+  embedding_model = NULL
 ) {
   acquisition_queue_heartbeat_preflight()
   worker_id <- acquisition_catalog_scalar_character(worker_id, "worker_id")
@@ -1924,13 +2112,24 @@ acquisition_worker_run <- function(
   lease_seconds <- acquisition_catalog_scalar_integer(lease_seconds, "lease_seconds", lower = 1L, upper = 604800L)
   poll_seconds <- acquisition_queue_nonnegative_seconds(poll_seconds, "poll_seconds", upper = 3600)
   lock_timeout <- acquisition_queue_nonnegative_seconds(lock_timeout, "lock_timeout", upper = 3600)
+  if (!is.character(job_kinds) || length(job_kinds) == 0L || anyNA(job_kinds) ||
+    any(!job_kinds %in% c("discover", "download", "migrate_storage", "ingest"))) {
+    acquisition_queue_abort("{.arg job_kinds} must contain supported acquisition job kinds.")
+  }
+  if (!is.null(ingest_fn) && !is.function(ingest_fn)) acquisition_queue_abort("{.arg ingest_fn} must be a function.")
   if (is.null(handlers) && lock_timeout >= lease_seconds) {
     acquisition_queue_abort("{.arg lock_timeout} must be shorter than {.arg lease_seconds} for built-in downloads.")
   }
   defaults <- list(
     discover = acquisition_queue_default_discover,
     download = function(job, catalog) acquisition_queue_default_download(job, catalog, lock_timeout = lock_timeout),
-    migrate_storage = acquisition_queue_default_migrate_storage
+    migrate_storage = acquisition_queue_default_migrate_storage,
+    ingest = function(job, catalog) {
+      acquisition_queue_default_ingest(
+        job, catalog,
+        ingest_fn = ingest_fn, embedding_model = embedding_model
+      )
+    }
   )
   if (!is.null(handlers)) {
     if (!is.list(handlers)) acquisition_queue_abort("{.arg handlers} must be a named list of functions.")
@@ -1944,7 +2143,7 @@ acquisition_worker_run <- function(
   outcomes <- list()
   while (length(outcomes) < max_jobs) {
     acquisition_queue_heartbeat_preflight()
-    claim <- acquisition_queue_claim(catalog, worker_id, lease_seconds = lease_seconds)
+    claim <- acquisition_queue_claim(catalog, worker_id, lease_seconds = lease_seconds, kinds = job_kinds)
     if (!isTRUE(claim$ok)) {
       if (poll_seconds > 0 && length(outcomes) < max_jobs) Sys.sleep(poll_seconds)
       break
@@ -1952,6 +2151,7 @@ acquisition_worker_run <- function(
     claim$heartbeat <- function(seconds = lease_seconds) {
       acquisition_queue_heartbeat(catalog, claim$job_id, claim$lease_token, lease_seconds = seconds)
     }
+    claim$lease_guard <- function() isTRUE(claim$heartbeat()$ok)
     handler <- defaults[[as.character(claim$kind)]]
     heartbeat_guard <- acquisition_queue_start_heartbeat_guard(catalog, claim, lease_seconds)
     if (!isTRUE(heartbeat_guard$ok)) {

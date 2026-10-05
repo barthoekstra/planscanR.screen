@@ -4,7 +4,12 @@
 \alias{acquisition_queue_claim}
 \title{Claim one available job with a unique expiring lease token.}
 \usage{
-acquisition_queue_claim(catalog, worker_id, lease_seconds = 300L)
+acquisition_queue_claim(
+  catalog,
+  worker_id,
+  lease_seconds = 300L,
+  kinds = acquisition_queue_default_job_kinds
+)
 }
 \arguments{
 \item{catalog}{A catalog from \code{\link[=acquisition_catalog_open]{acquisition_catalog_open()}}.}
