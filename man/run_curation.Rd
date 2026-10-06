@@ -15,6 +15,8 @@ run_curation(
   actor_probe = NULL,
   logout_path = NULL,
   historical_reviews = NULL,
+  input_provenance = NULL,
+  cohort_receipt = NULL,
   ...
 )
 }
@@ -43,6 +45,13 @@ control, for example \verb{/app/logout}. It is absent by default.}
 
 \item{historical_reviews}{Optional data frame of imported historical review
 linkage and attribution rows. Unresolved rows are shown read-only.}
+
+\item{input_provenance}{Optional BIOGAIN or caller-supplied identity for the
+compatible scored input. The app adds the loaded snapshot identity and content
+fingerprint before training.}
+
+\item{cohort_receipt}{Optional immutable historical-cohort receipt carried
+into the model and publication provenance.}
 
 \item{...}{Further arguments passed to \code{\link[shiny:runApp]{shiny::runApp()}}, such as \code{host} or
 \code{port}.}

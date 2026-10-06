@@ -4,7 +4,12 @@
 \alias{curation_enrich_records}
 \title{Enrich a corpus frame with the scalar curation signals.}
 \usage{
-curation_enrich_records(records, config, drop_list_columns = TRUE)
+curation_enrich_records(
+  records,
+  config,
+  drop_list_columns = TRUE,
+  preserve_scored_features = FALSE
+)
 }
 \arguments{
 \item{records}{A data frame with non-empty \code{country} and \code{document_id}
@@ -15,6 +20,11 @@ and \code{download_status}.}
 
 \item{drop_list_columns}{If \code{TRUE}, remove UI-unfriendly attachment,
 download, discovery, and local-path list columns after deriving counts.}
+
+\item{preserve_scored_features}{If \code{TRUE}, require the configured scored
+feature columns before enrichment and restore their exact values, including
+\code{NA}, after enrichment. This is the opt-in path for a verified scored-input
+context; the default retains ordinary keyword recomputation.}
 }
 \value{
 The enriched input frame with \code{cosine_max}, keyword scores,

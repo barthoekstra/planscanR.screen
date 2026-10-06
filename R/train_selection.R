@@ -32,6 +32,12 @@
 #'   metrics.
 #' @param threshold Default probability cutoff for the keep decision.
 #' @param seed Optional RNG seed for reproducible folds.
+#' @param training_provenance Optional provenance list stored on the returned
+#'   model. Used by the curation adapter to pin the review cohort and scored
+#'   input identities.
+#' @param strict If `TRUE`, require a complete finite scored input and record
+#'   exclusion accounting for the curation foundation path. The default keeps
+#'   the generic trainer's historical feature behavior.
 #' @return A `planscanR_selection_model`: the fitted workflow plus provenance
 #'   (`learner_name`, `features`, `n_train`, `trained_at`, ...), the out-of-fold
 #'   predictions (`oof`), and the CV metrics at `threshold` (`cv`).
@@ -54,7 +60,9 @@ train_selection_model <- function(
   v = 5L,
   repeats = 1L,
   threshold = 0.5,
-  seed = NULL
+  seed = NULL,
+  training_provenance = NULL,
+  strict = FALSE
 ) {
   if (!inherits(learner, "planscanR_selection_learner")) {
     cli::cli_abort("{.arg learner} must be a planscanR_selection_learner.")
@@ -69,9 +77,45 @@ train_selection_model <- function(
 
   dat <- build_training_frame(
     records, reviews, topics, labels,
-    eval_source = eval_source, include = include
+    eval_source = eval_source, include = include, strict = strict
   )
   feature_names <- attr(dat, "feature_names")
+  training_audit <- attr(dat, "training_audit", exact = TRUE)
+
+  if (isTRUE(strict)) {
+    class_counts <- table(dat$decision)
+    if (length(class_counts) < 2L || any(class_counts < 2L)) {
+      cli::cli_abort(
+        "Each training class needs at least two eligible projects for stratified out-of-fold validation.",
+        class = "planscanR_error_bad_input"
+      )
+    }
+    if (length(feature_names) == 0L) {
+      cli::cli_abort(
+        "No scored features are available for model training.",
+        class = "planscanR_error_bad_input"
+      )
+    }
+    varying <- vapply(dat[feature_names], function(value) {
+      if (is.numeric(value)) {
+        return(length(unique(value[is.finite(value)])) > 1L)
+      }
+      length(unique(value[!is.na(value)])) > 1L
+    }, logical(1))
+    if (!any(varying)) {
+      cli::cli_abort(
+        "The selected scored input has no varying features among eligible projects.",
+        class = "planscanR_error_bad_input"
+      )
+    }
+    v <- as.integer(v)
+    if (length(v) != 1L || is.na(v) || v < 2L || v > min(class_counts)) {
+      cli::cli_abort(
+        "The requested number of folds must be between 2 and the smallest eligible class count ({min(class_counts)}).",
+        class = "planscanR_error_bad_input"
+      )
+    }
+  }
 
   if (!is.null(seed) && !is.na(seed)) {
     set.seed(as.integer(seed))
@@ -96,13 +140,20 @@ train_selection_model <- function(
       n_train = nrow(dat),
       n_keep = sum(dat$decision == "keep"),
       n_by_country = as.list(table(dat$country)),
+      cv_by_country = selection_metrics_from_oof_by_country(oof, threshold = threshold),
       eval_source = eval_source,
       threshold = threshold,
       v = as.integer(v),
       repeats = as.integer(repeats),
       trained_at = Sys.time(),
       oof = oof,
-      cv = cv
+      cv = cv,
+      training_audit = training_audit,
+      training_provenance = training_provenance %||% list(),
+      feature_contract = list(
+        strict = isTRUE(strict),
+        feature_names = feature_names
+      )
     ),
     class = "planscanR_selection_model"
   )
@@ -188,59 +239,312 @@ consensus_reviews <- function(reviews, decisions = c("keep", "drop")) {
   out
 }
 
+# Validate the scored-input contract used by fitting.  `selection_features()`
+# intentionally retains its historical zero-fill behaviour for generic
+# prediction callers; fitting uses this strict preflight so an incompatible
+# snapshot can never turn missing scores into training signal.
+#' @noRd
+selection_training_feature_contract <- function(records, topics, labels, include = character(0)) {
+  if (!is.data.frame(records) || !all(c("country", "document_id") %in% names(records))) {
+    cli::cli_abort(
+      "The scored input is incompatible with model training: country and document_id are required.",
+      class = "planscanR_error_bad_input"
+    )
+  }
+  if (anyNA(records$country) || anyNA(records$document_id) ||
+    any(!nzchar(as.character(records$country))) || any(!nzchar(as.character(records$document_id)))) {
+    cli::cli_abort(
+      "The scored input is incompatible with model training: project keys cannot be missing or empty.",
+      class = "planscanR_error_bad_input"
+    )
+  }
+  keys <- paste(as.character(records$country), as.character(records$document_id), sep = "\r")
+  if (anyDuplicated(keys)) {
+    cli::cli_abort(
+      "The scored input is incompatible with model training: each country/document project key must be unique.",
+      class = "planscanR_error_bad_input"
+    )
+  }
+  numeric_features <- c(
+    paste0("relevance_score_", names(topics)),
+    paste0("class_score_", names(labels)),
+    "kw_total"
+  )
+  missing_features <- setdiff(numeric_features, names(records))
+  if (length(missing_features) > 0L) {
+    cli::cli_abort(
+      paste0(
+        "The scored input is incompatible with model training: missing feature",
+        if (length(missing_features) == 1L) "" else "s",
+        " ", paste(missing_features, collapse = ", "), ".",
+        " Select a verified snapshot with the configured scores; missing values are not manufactured."
+      ),
+      class = "planscanR_error_bad_input"
+    )
+  }
+  non_numeric <- numeric_features[!vapply(records[numeric_features], is.numeric, logical(1))]
+  if (length(non_numeric) > 0L) {
+    cli::cli_abort(
+      paste0(
+        "The scored input is incompatible with model training: feature",
+        if (length(non_numeric) == 1L) "" else "s",
+        " must be numeric (", paste(non_numeric, collapse = ", "), ")."
+      ),
+      class = "planscanR_error_bad_input"
+    )
+  }
+  complete <- rep(TRUE, nrow(records))
+  for (feature in numeric_features) {
+    complete <- complete & is.finite(records[[feature]])
+  }
+  list(
+    keys = keys,
+    numeric_features = numeric_features,
+    feature_names = selection_feature_names(topics, labels, include = include),
+    complete = complete
+  )
+}
+
+#' @noRd
+selection_training_unresolved_mask <- function(reviews) {
+  unresolved <- rep(FALSE, nrow(reviews))
+  resolved_current <- rep(FALSE, nrow(reviews))
+  if ("mutation_allowed" %in% names(reviews)) {
+    allowed <- as.logical(reviews$mutation_allowed)
+    unresolved <- unresolved | is.na(allowed) | !allowed
+  } else {
+    allowed <- rep(NA, nrow(reviews))
+  }
+  final_linkage <- if ("linkage_status" %in% names(reviews)) {
+    tolower(trimws(as.character(reviews$linkage_status)))
+  } else if ("current_linkage" %in% names(reviews)) {
+    tolower(trimws(as.character(reviews$current_linkage)))
+  } else {
+    rep(NA_character_, nrow(reviews))
+  }
+  resolved_current <- !is.na(final_linkage) & final_linkage %in% c("current_unique", "matched")
+  if ("mutation_allowed" %in% names(reviews)) {
+    resolved_current <- resolved_current & !is.na(allowed) & allowed
+  }
+  if ("linkage_status" %in% names(reviews)) {
+    value <- tolower(trimws(as.character(reviews$linkage_status)))
+    unresolved <- unresolved | (!is.na(value) & value %in% c(
+      "ambiguous", "pending", "unseen", "unresolved", "unverified", "historical_only"
+    ))
+  }
+  for (column in intersect(c("current_linkage", "historical_linkage"), names(reviews))) {
+    value <- tolower(trimws(as.character(reviews[[column]])))
+    unresolved <- unresolved | (!resolved_current & !is.na(value) & value %in% c(
+      "ambiguous", "pending", "unseen", "unresolved", "unverified", "historical_only"
+    ))
+  }
+  unresolved
+}
+
+#' @noRd
+selection_training_consensus_audit <- function(reviews) {
+  verdicts <- reviews[reviews$decision %in% c("keep", "drop"), , drop = FALSE]
+  if (nrow(verdicts) == 0L) {
+    return(list(conflict_keys = character(0), consensus_rows = 0L))
+  }
+  verdicts$.ra <- parse_reviewed_at_chr(verdicts$reviewed_at)
+  reviewer <- if ("reviewer" %in% names(verdicts)) {
+    as.character(verdicts$reviewer)
+  } else if ("reviewer_id" %in% names(verdicts)) {
+    as.character(verdicts$reviewer_id)
+  } else {
+    rep("", nrow(verdicts))
+  }
+  reviewer[is.na(reviewer)] <- ""
+  verdicts$.reviewer <- reviewer
+  verdicts <- verdicts[order(verdicts$.ra, decreasing = TRUE), , drop = FALSE]
+  verdicts <- verdicts[!duplicated(paste(
+    verdicts$country, verdicts$document_id, verdicts$.reviewer
+  )), , drop = FALSE]
+  key <- paste(verdicts$country, verdicts$document_id, sep = "\r")
+  groups <- split(seq_len(nrow(verdicts)), key)
+  decisions <- vapply(groups, function(index) length(unique(verdicts$decision[index])), integer(1))
+  list(
+    conflict_keys = names(decisions)[decisions > 1L],
+    consensus_rows = sum(decisions == 1L)
+  )
+}
+
 # Join records to consensus keep/drop labels (see consensus_reviews()) and
 # attach the feature frame. Returns a tibble with a `decision` factor (levels
 # keep, drop — keep is the positive/event level) and a `"feature_names"`
-# attribute.
+# attribute. Strict fitting also carries a compact audit for the model
+# artifact; no unavailable score is converted to zero on the fit path.
 #' @noRd
-build_training_frame <- function(records, reviews, topics, labels, eval_source = "random", include = character(0)) {
-  src <- reviews
-  if (!is.null(eval_source)) {
-    src <- src[src$source %in% eval_source, , drop = FALSE]
-  }
-  if (sum(src$decision %in% c("keep", "drop")) == 0L) {
-    src_txt <- if (is.null(eval_source)) {
-      ""
-    } else {
-      sprintf(" for source '%s'", paste(eval_source, collapse = ", "))
+build_training_frame <- function(
+  records,
+  reviews,
+  topics,
+  labels,
+  eval_source = "random",
+  include = character(0),
+  strict = FALSE
+) {
+  if (!isTRUE(strict)) {
+    # Preserve the generic trainer's historical zero-fill and review semantics.
+    # The curation foundation path opts into the stricter branch below so a
+    # verified snapshot cannot silently manufacture a training feature.
+    src <- reviews
+    if (!is.null(eval_source)) {
+      src <- src[src$source %in% eval_source, , drop = FALSE]
     }
+    if (sum(src$decision %in% c("keep", "drop")) == 0L) {
+      src_txt <- if (is.null(eval_source)) {
+        ""
+      } else {
+        sprintf(" for source '%s'", paste(eval_source, collapse = ", "))
+      }
+      cli::cli_abort(
+        "No keep/drop labels found{src_txt}.",
+        class = "planscanR_error_bad_input"
+      )
+    }
+    dec <- consensus_reviews(src)
+    if (nrow(dec) == 0L) {
+      cli::cli_abort(
+        "No agreed keep/drop labels: every multiply-reviewed record has conflicting decisions.",
+        class = "planscanR_error_bad_input"
+      )
+    }
+    feats <- selection_features(records, topics, labels, include = include)
+    feature_names <- attr(feats, "feature_names")
+    key_f <- paste(feats$country, feats$document_id)
+    key_d <- paste(dec$country, dec$document_id)
+    m <- match(key_d, key_f)
+    ok <- !is.na(m)
+    if (!any(ok)) {
+      cli::cli_abort(
+        "None of the labelled records were found in {.arg records}.",
+        class = "planscanR_error_bad_input"
+      )
+    }
+    dat <- feats[m[ok], , drop = FALSE]
+    dat$decision <- factor(dec$decision[ok], levels = c("keep", "drop"))
+    if (nlevels(droplevels(dat$decision)) < 2L) {
+      cli::cli_abort(
+        "Need both {.val keep} and {.val drop} labels to train; only one class present.",
+        class = "planscanR_error_bad_input"
+      )
+    }
+    attr(dat, "feature_names") <- feature_names
+    return(dat)
+  }
+
+  if (!is.data.frame(reviews) || !all(c("country", "document_id", "decision", "source") %in% names(reviews))) {
+    cli::cli_abort(
+      "The review input must include country, document_id, decision, and source columns.",
+      class = "planscanR_error_bad_input"
+    )
+  }
+  source_mask <- if (is.null(eval_source)) rep(TRUE, nrow(reviews)) else reviews$source %in% eval_source
+  src <- reviews[source_mask, , drop = FALSE]
+  source_excluded <- sum(!source_mask)
+  if (sum(src$decision %in% c("keep", "drop")) == 0L) {
+    src_txt <- if (is.null(eval_source)) "" else sprintf(" for source '%s'", paste(eval_source, collapse = ", "))
     cli::cli_abort(
       "No keep/drop labels found{src_txt}.",
       class = "planscanR_error_bad_input"
     )
   }
-  # One agreed label per record: a multiply-reviewed record is used only when
-  # its reviewers unanimously agree; conflicting records are excluded.
-  dec <- consensus_reviews(src)
+
+  unresolved_mask <- selection_training_unresolved_mask(src)
+  unresolved_keys <- unique(paste(
+    src$country[unresolved_mask], src$document_id[unresolved_mask],
+    sep = "\r"
+  ))
+  unresolved_keys <- unresolved_keys[nzchar(unresolved_keys) & !is.na(unresolved_keys)]
+  src_key <- paste(src$country, src$document_id, sep = "\r")
+  src_clean <- src[!unresolved_mask & !(src_key %in% unresolved_keys), , drop = FALSE]
+  consensus_audit <- selection_training_consensus_audit(src_clean)
+
+  # One agreed label per project precedes any fold construction. Conflicting
+  # records are excluded as ambiguous ground truth; unsure rows are reported
+  # separately and never become keep/drop labels.
+  dec <- consensus_reviews(src_clean)
   if (nrow(dec) == 0L) {
     cli::cli_abort(
-      "No agreed keep/drop labels: every multiply-reviewed record has conflicting decisions.",
+      "No agreed keep/drop labels: every eligible project has an unresolved or conflicting decision.",
       class = "planscanR_error_bad_input"
     )
   }
 
+  contract <- if (isTRUE(strict)) {
+    selection_training_feature_contract(records, topics, labels, include = include)
+  } else {
+    list(
+      keys = paste(records$country, records$document_id, sep = "\r"),
+      numeric_features = c(paste0("relevance_score_", names(topics)), paste0("class_score_", names(labels)), "kw_total"),
+      feature_names = selection_feature_names(topics, labels, include = include),
+      complete = rep(TRUE, nrow(records))
+    )
+  }
   feats <- selection_features(records, topics, labels, include = include)
   feature_names <- attr(feats, "feature_names")
-  key_f <- paste(feats$country, feats$document_id)
-  key_d <- paste(dec$country, dec$document_id)
+  key_f <- contract$keys
+  key_d <- paste(dec$country, dec$document_id, sep = "\r")
   m <- match(key_d, key_f)
-  ok <- !is.na(m)
-  if (!any(ok)) {
+  matched <- !is.na(m)
+  complete_match <- matched & contract$complete[m]
+  if (!any(matched)) {
     cli::cli_abort(
       "None of the labelled records were found in {.arg records}.",
       class = "planscanR_error_bad_input"
     )
   }
 
-  dat <- feats[m[ok], , drop = FALSE]
-  dat$decision <- factor(dec$decision[ok], levels = c("keep", "drop"))
+  dat <- feats[m[complete_match], , drop = FALSE]
+  dat$decision <- factor(dec$decision[complete_match], levels = c("keep", "drop"))
   if (nlevels(droplevels(dat$decision)) < 2L) {
     cli::cli_abort(
-      "Need both {.val keep} and {.val drop} labels to train; only one class present.",
+      "Need both {.val keep} and {.val drop} labels to train; only one class is present among compatible projects.",
       class = "planscanR_error_bad_input"
     )
   }
+  audit <- list(
+    consensus_before_folds = TRUE,
+    source = list(
+      requested = eval_source,
+      considered = nrow(src),
+      excluded = source_excluded,
+      corrected = if ("original_source" %in% names(src)) {
+        sum(!is.na(src$original_source) & nzchar(as.character(src$original_source)) &
+          as.character(src$original_source) != as.character(src$source))
+      } else {
+        0L
+      }
+    ),
+    snapshot = list(
+      rows = nrow(records),
+      countries = sort(unique(as.character(records$country))),
+      feature_names = feature_names
+    ),
+    consensus = list(
+      rows = nrow(dec),
+      conflicts = length(consensus_audit$conflict_keys),
+      projects = unique(paste(dec$country, dec$document_id, sep = "\r"))
+    ),
+    eligible = list(
+      projects = sum(complete_match),
+      keep = sum(dec$decision[complete_match] == "keep"),
+      drop = sum(dec$decision[complete_match] == "drop"),
+      features = sum(complete_match)
+    ),
+    exclusions = list(
+      source = source_excluded,
+      unsure = sum(src$decision == "unsure", na.rm = TRUE),
+      unresolved = length(unresolved_keys),
+      disagreement = length(consensus_audit$conflict_keys),
+      unmatched = sum(!matched),
+      incompatible = sum(matched & !contract$complete[m])
+    )
+  )
   attr(dat, "feature_names") <- feature_names
+  attr(dat, "training_audit") <- audit
   dat
 }
 
@@ -310,6 +614,23 @@ selection_metrics_from_oof <- function(oof, threshold = 0.5) {
   )
 }
 
+#' @noRd
+selection_metrics_from_oof_by_country <- function(oof, threshold = 0.5) {
+  if (is.null(oof) || nrow(oof) == 0L) {
+    return(NULL)
+  }
+  groups <- split(seq_len(nrow(oof)), oof$country)
+  rows <- lapply(names(groups), function(country) {
+    metrics <- selection_metrics_from_oof(oof[groups[[country]], , drop = FALSE], threshold = threshold)
+    metrics$country <- country
+    metrics
+  })
+  overall <- selection_metrics_from_oof(oof, threshold = threshold)
+  overall$country <- "all"
+  result <- dplyr::bind_rows(c(list(overall), rows))
+  result[, c("country", setdiff(names(result), "country")), drop = FALSE]
+}
+
 #' Out-of-fold metrics for a trained model at an arbitrary threshold.
 #'
 #' Recomputes precision/recall/F1 + confusion from the model's stored
@@ -332,19 +653,7 @@ selection_cv_metrics <- function(model, threshold = NULL, by_country = FALSE) {
   if (!by_country) {
     return(selection_metrics_from_oof(oof, threshold = thr))
   }
-  if (is.null(oof) || nrow(oof) == 0L) {
-    return(NULL)
-  }
-  groups <- split(seq_len(nrow(oof)), oof$country)
-  rows <- lapply(names(groups), function(cc) {
-    m <- selection_metrics_from_oof(oof[groups[[cc]], , drop = FALSE], threshold = thr)
-    m$country <- cc
-    m
-  })
-  allm <- selection_metrics_from_oof(oof, threshold = thr)
-  allm$country <- "all"
-  out <- dplyr::bind_rows(c(list(allm), rows))
-  out[, c("country", setdiff(names(out), "country")), drop = FALSE]
+  selection_metrics_from_oof_by_country(oof, threshold = thr)
 }
 
 #' Predict the learned selection decision for records.

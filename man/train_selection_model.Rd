@@ -15,7 +15,9 @@ train_selection_model(
   v = 5L,
   repeats = 1L,
   threshold = 0.5,
-  seed = NULL
+  seed = NULL,
+  training_provenance = NULL,
+  strict = FALSE
 )
 }
 \arguments{
@@ -46,6 +48,14 @@ metrics.}
 \item{threshold}{Default probability cutoff for the keep decision.}
 
 \item{seed}{Optional RNG seed for reproducible folds.}
+
+\item{training_provenance}{Optional provenance list stored on the returned
+model. Used by the curation adapter to pin the review cohort and scored input
+identities.}
+
+\item{strict}{If \code{TRUE}, require a complete finite scored input and record
+exclusion accounting for the curation foundation path. The default keeps the
+generic trainer's historical feature behavior.}
 }
 \value{
 A \code{planscanR_selection_model}: the fitted workflow plus provenance

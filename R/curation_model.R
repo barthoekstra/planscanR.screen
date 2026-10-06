@@ -104,6 +104,36 @@ curation_model_normalize_reviews <- function(reviews, config = NULL) {
   out
 }
 
+curation_model_training_provenance <- function(
+  config,
+  records,
+  reviews,
+  input_provenance = NULL,
+  cohort_receipt = NULL
+) {
+  source_counts <- if ("source" %in% names(reviews)) {
+    as.list(table(as.character(reviews$source), useNA = "ifany"))
+  } else {
+    list()
+  }
+  list(
+    config = list(
+      project_id = config$project_id,
+      corpus_id = config$corpus_id,
+      config_id = config$config_id,
+      fingerprint = curation_config_fingerprint(config)
+    ),
+    review = list(
+      fingerprint = curation_artifact_content_fingerprint(reviews),
+      rows = nrow(reviews),
+      source_counts = source_counts
+    ),
+    input = input_provenance %||% list(),
+    cohort_receipt = cohort_receipt %||% list(),
+    record_rows = nrow(records)
+  )
+}
+
 #' Return the configured learner choices available to a curation UI.
 #'
 #' The registry and availability check are owned by the selection framework;
@@ -146,6 +176,9 @@ curation_selection_learner <- function(learner_key = "logistic") {
 #' @param v,repeats Cross-validation folds and repeats.
 #' @param threshold Probability cutoff stored on the model.
 #' @param seed Optional seed passed to the existing trainer.
+#' @param input_provenance Optional identity for the explicitly selected
+#'   scored input snapshot.
+#' @param cohort_receipt Optional immutable historical-cohort receipt identity.
 #' @return A `planscanR_selection_model`.
 #' @export
 curation_train_model <- function(
@@ -159,11 +192,20 @@ curation_train_model <- function(
   v = 5L,
   repeats = 1L,
   threshold = 0.5,
-  seed = NULL
+  seed = NULL,
+  input_provenance = NULL,
+  cohort_receipt = NULL
 ) {
   curation_check_config(config)
   learner <- curation_model_resolve_learner(learner, learner_key)
   reviews <- curation_model_normalize_reviews(reviews, config)
+  training_provenance <- curation_model_training_provenance(
+    config = config,
+    records = records,
+    reviews = reviews,
+    input_provenance = input_provenance,
+    cohort_receipt = cohort_receipt
+  )
   train_selection_model(
     records = records,
     reviews = reviews,
@@ -175,7 +217,9 @@ curation_train_model <- function(
     v = v,
     repeats = repeats,
     threshold = threshold,
-    seed = seed
+    seed = seed,
+    training_provenance = training_provenance,
+    strict = TRUE
   )
 }
 

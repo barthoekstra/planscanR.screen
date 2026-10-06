@@ -71,6 +71,24 @@ curation_existing_count <- function(records, column, fallback) {
   as.integer(value)
 }
 
+curation_scored_feature_fingerprint <- function(records, feature_names) {
+  feature_names <- unique(as.character(feature_names %||% character(0)))
+  required <- c("country", "document_id", feature_names)
+  if (!is.data.frame(records) || !all(required %in% names(records))) {
+    return(NULL)
+  }
+  value <- as.data.frame(
+    records[c("country", "document_id", feature_names)],
+    stringsAsFactors = FALSE
+  )
+  attributes(value) <- list(
+    names = names(value),
+    row.names = seq_len(nrow(value)),
+    class = "data.frame"
+  )
+  curation_artifact_content_fingerprint(value)
+}
+
 curation_drop_derived_columns <- function(records, prefix, keep) {
   old <- grep(prefix, names(records), value = TRUE)
   drop <- setdiff(old, keep)
@@ -94,10 +112,19 @@ curation_drop_derived_columns <- function(records, prefix, keep) {
 #' @param config A `planscanR_curation_config` supplying `topics` and `lexicon`.
 #' @param drop_list_columns If `TRUE`, remove UI-unfriendly attachment,
 #'   download, discovery, and local-path list columns after deriving counts.
+#' @param preserve_scored_features If `TRUE`, require the configured scored
+#'   feature columns before enrichment and restore their exact values,
+#'   including `NA`, after enrichment. This is the opt-in path for a verified
+#'   scored-input context; the default retains ordinary keyword recomputation.
 #' @return The enriched input frame with `cosine_max`, keyword scores,
 #'   attachment/download counts, and classifier fallback columns.
 #' @export
-curation_enrich_records <- function(records, config, drop_list_columns = TRUE) {
+curation_enrich_records <- function(
+  records,
+  config,
+  drop_list_columns = TRUE,
+  preserve_scored_features = FALSE
+) {
   curation_check_config(config)
   records <- curation_validate_record_frame(records)
   if (!is.logical(drop_list_columns) || length(drop_list_columns) != 1L || is.na(drop_list_columns)) {
@@ -105,6 +132,40 @@ curation_enrich_records <- function(records, config, drop_list_columns = TRUE) {
       "{.arg drop_list_columns} must be one non-missing logical value.",
       class = "planscanR_error_curation_records"
     )
+  }
+  if (!is.logical(preserve_scored_features) ||
+    length(preserve_scored_features) != 1L || is.na(preserve_scored_features)) {
+    curation_abort(
+      "{.arg preserve_scored_features} must be one non-missing logical value.",
+      class = "planscanR_error_curation_records"
+    )
+  }
+  feature_names <- selection_feature_names(config$topics, config$labels)
+  scored_features <- NULL
+  if (isTRUE(preserve_scored_features)) {
+    missing_features <- setdiff(feature_names, names(records))
+    if (length(missing_features) > 0L) {
+      curation_abort(
+        paste0(
+          "The verified scored input is missing configured feature",
+          if (length(missing_features) == 1L) "" else "s",
+          ": ", paste(missing_features, collapse = ", "), "."
+        ),
+        class = "planscanR_error_curation_records"
+      )
+    }
+    non_numeric <- feature_names[!vapply(records[feature_names], is.numeric, logical(1))]
+    if (length(non_numeric) > 0L) {
+      curation_abort(
+        paste0(
+          "The verified scored input has non-numeric configured feature",
+          if (length(non_numeric) == 1L) "" else "s",
+          ": ", paste(non_numeric, collapse = ", "), "."
+        ),
+        class = "planscanR_error_curation_records"
+      )
+    }
+    scored_features <- records[feature_names]
   }
 
   # Only configured relevance columns participate in the derived maximum. A
@@ -120,6 +181,11 @@ curation_enrich_records <- function(records, config, drop_list_columns = TRUE) {
   # Keyword values are always recomputed from the explicit configuration.
   records <- curation_drop_derived_columns(records, "^kw_", character(0L))
   records <- score_keywords(records, lexicon = config$lexicon)
+  if (isTRUE(preserve_scored_features)) {
+    for (feature in feature_names) {
+      records[[feature]] <- scored_features[[feature]]
+    }
+  }
 
   attachment_count <- if ("attachment_urls" %in% names(records)) {
     curation_count_list_values(records$attachment_urls, "attachments")
@@ -437,14 +503,29 @@ curation_records_refresh <- function(provider, corpus_id, countries = NULL) {
 #' @param config A `planscanR_curation_config` whose corpus identity is used.
 #' @param countries Optional country filter.
 #' @param refresh If `TRUE`, call the provider's refresh callback.
+#' @param preserve_scored_features If `TRUE`, pass the verified scored-input
+#'   preservation option through to [curation_enrich_records()].
 #' @return An enriched corpus data frame.
 #' @export
-curation_records_snapshot <- function(provider, config, countries = NULL, refresh = FALSE) {
+curation_records_snapshot <- function(
+  provider,
+  config,
+  countries = NULL,
+  refresh = FALSE,
+  preserve_scored_features = FALSE
+) {
   curation_check_records_provider(provider)
   curation_check_config(config)
   if (!is.logical(refresh) || length(refresh) != 1L || is.na(refresh)) {
     curation_abort(
       "{.arg refresh} must be one non-missing logical value.",
+      class = "planscanR_error_curation_records"
+    )
+  }
+  if (!is.logical(preserve_scored_features) ||
+    length(preserve_scored_features) != 1L || is.na(preserve_scored_features)) {
+    curation_abort(
+      "{.arg preserve_scored_features} must be one non-missing logical value.",
       class = "planscanR_error_curation_records"
     )
   }
@@ -468,13 +549,28 @@ curation_records_snapshot <- function(provider, config, countries = NULL, refres
   } else {
     raw_fingerprint <- curation_artifact_content_fingerprint(records)
   }
-  enriched <- curation_enrich_records(records, config)
-  attr(enriched, "curation_snapshot_metadata") <- list(
+  enriched <- curation_enrich_records(
+    records,
+    config,
+    preserve_scored_features = preserve_scored_features
+  )
+  metadata <- list(
     corpus_fingerprint = raw_fingerprint,
     config_fingerprint = curation_config_fingerprint(config),
     enrichment_schema = curation_artifact_enrichment_schema,
     filter_coverage = curation_artifact_filter_coverage(records, countries)
   )
+  if (isTRUE(preserve_scored_features)) {
+    feature_names <- selection_feature_names(config$topics, config$labels)
+    metadata$preserve_scored_features <- TRUE
+    metadata$scored_feature_names <- feature_names
+    metadata$scored_feature_fingerprint <- curation_scored_feature_fingerprint(
+      enriched,
+      feature_names
+    )
+    metadata$prepared_record_fingerprint <- curation_artifact_content_fingerprint(enriched)
+  }
+  attr(enriched, "curation_snapshot_metadata") <- metadata
   enriched
 }
 

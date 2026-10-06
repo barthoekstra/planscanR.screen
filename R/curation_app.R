@@ -1662,9 +1662,13 @@ curation_app_model_provenance <- function(
   reviews,
   actor,
   snapshot_version = NULL,
+  snapshot_id = NULL,
   learner_key,
   eval_source,
-  threshold
+  threshold,
+  input_provenance = NULL,
+  cohort_receipt = NULL,
+  training_audit = NULL
 ) {
   curation_check_scope(scope, class = "planscanR_error_curation_artifact")
   curation_check_config(config)
@@ -1676,14 +1680,36 @@ curation_app_model_provenance <- function(
       class = "planscanR_error_curation_artifact"
     )
   }
+  input <- utils::modifyList(
+    list(
+      snapshot_id = snapshot_id,
+      snapshot_version = version,
+      fingerprint = curation_artifact_content_fingerprint(records)
+    ),
+    input_provenance %||% list()
+  )
   list(
     review_fingerprint = curation_artifact_content_fingerprint(reviews),
     snapshot_version = version,
     config_fingerprint = curation_config_fingerprint(config),
     corpus_snapshot = list(
       corpus_id = scope$corpus_id,
-      version = version
+      version = version,
+      snapshot_id = snapshot_id
     ),
+    review = list(
+      fingerprint = curation_artifact_content_fingerprint(reviews),
+      rows = nrow(reviews)
+    ),
+    config = list(
+      project_id = scope$project_id,
+      corpus_id = scope$corpus_id,
+      config_id = scope$config_id,
+      fingerprint = curation_config_fingerprint(config)
+    ),
+    input = input,
+    cohort_receipt = cohort_receipt %||% list(),
+    training_audit = training_audit %||% list(),
     training_parameters = list(
       learner = as.character(learner_key %||% "default"),
       eval_source = eval_source,
@@ -1694,6 +1720,76 @@ curation_app_model_provenance <- function(
     ),
     creator = actor$id
   )
+}
+
+curation_app_training_input_provenance <- function(
+  base = NULL,
+  records,
+  snapshot_id = NULL,
+  snapshot_version = NULL
+) {
+  if (!is.data.frame(records)) {
+    curation_abort(
+      "Model training input provenance needs a scored record data frame.",
+      class = "planscanR_error_curation_artifact"
+    )
+  }
+  result <- base %||% list()
+  if (!is.list(result)) {
+    curation_abort(
+      "Model input provenance must be a named list.",
+      class = "planscanR_error_curation_artifact"
+    )
+  }
+  if (!is.null(snapshot_id) && is.null(result$snapshot_id)) result$snapshot_id <- as.character(snapshot_id)
+  if (!is.null(snapshot_version) && is.null(result$snapshot_version)) result$snapshot_version <- as.character(snapshot_version)
+  result$rows <- nrow(records)
+  result$countries <- sort(unique(as.character(records$country)))
+  result$fingerprint <- curation_artifact_content_fingerprint(records)
+  if (!is.null(result$feature_names)) {
+    result$prepared_feature_fingerprint <- curation_scored_feature_fingerprint(
+      records,
+      result$feature_names
+    )
+  }
+  result
+}
+
+curation_app_training_input_matches <- function(records, provenance = NULL, metadata = NULL) {
+  expected <- if (is.list(provenance)) provenance$record_fingerprint else NULL
+  if (is.null(expected)) {
+    return(TRUE)
+  }
+  if (!is.character(expected) || length(expected) != 1L || is.na(expected) || !nzchar(expected)) {
+    return(FALSE)
+  }
+  expected_features <- if (is.list(provenance)) provenance$scored_feature_fingerprint else NULL
+  if (isTRUE(provenance$preserve_scored_features) &&
+    (is.null(expected_features) || is.null(provenance$feature_names))) {
+    return(FALSE)
+  }
+  if (!is.null(expected_features)) {
+    actual_features <- curation_scored_feature_fingerprint(
+      records,
+      provenance$feature_names
+    )
+    if (!identical(as.character(expected_features), as.character(actual_features))) {
+      return(FALSE)
+    }
+    metadata_features <- if (is.list(metadata)) metadata$scored_feature_fingerprint else NULL
+    if (!is.null(metadata_features) &&
+      !identical(as.character(metadata_features), as.character(actual_features))) {
+      return(FALSE)
+    }
+  }
+  actual <- curation_artifact_content_fingerprint(records)
+  metadata_fingerprint <- if (is.list(metadata)) metadata$corpus_fingerprint else NULL
+  if (is.null(metadata_fingerprint)) {
+    record_metadata <- attr(records, "curation_snapshot_metadata", exact = TRUE)
+    metadata_fingerprint <- if (is.list(record_metadata)) record_metadata$corpus_fingerprint else NULL
+  }
+  identical(as.character(expected), as.character(actual)) ||
+    identical(as.character(expected), as.character(metadata_fingerprint))
 }
 
 curation_app_sample_nonce <- local({
@@ -1823,6 +1919,9 @@ curation_app_server <- function(input, output, session, context) {
   repository <- context$review_repository
   artifact_store <- context$artifact_store
   historical_links <- context$historical_reviews %||% NULL
+  model_input_provenance <- context$input_provenance %||% list()
+  cohort_receipt <- context$cohort_receipt %||% list()
+  preserve_scored_features <- isTRUE(model_input_provenance$preserve_scored_features)
   curation_app_check_actor_resolver(context$actor_resolver)
   actor <- curation_resolve_actor(
     context$actor_resolver,
@@ -1890,14 +1989,20 @@ curation_app_server <- function(input, output, session, context) {
     app_state <- new.env(parent = emptyenv())
   }
   read_records <- function(refresh = FALSE) {
-    curation_records_snapshot(provider, config, refresh = refresh)
+    curation_records_snapshot(
+      provider,
+      config,
+      refresh = refresh,
+      preserve_scored_features = preserve_scored_features
+    )
   }
   snapshot_info <- if (exists("snapshot", envir = app_state, inherits = FALSE)) {
     app_state$snapshot
   } else {
     curation_app_read_snapshot(artifact_store, scope, actor)
   }
-  if (curation_app_snapshot_compatible(snapshot_info, scope, config)) {
+  if (curation_app_snapshot_compatible(snapshot_info, scope, config) &&
+    curation_app_training_input_matches(snapshot_info$records, model_input_provenance, snapshot_info$metadata)) {
     initial_records <- snapshot_info$records
     app_state$snapshot <- snapshot_info
   } else {
@@ -1909,6 +2014,13 @@ curation_app_server <- function(input, output, session, context) {
       shiny::showNotification(
         paste0("Unable to load records: ", conditionMessage(live_records)),
         type = "error", duration = 8
+      )
+      initial_records <- curation_app_empty_records()
+      snapshot_info <- list(records = NULL, id = NULL, version = NULL, revision = 0L, metadata = list())
+    } else if (!curation_app_training_input_matches(live_records, model_input_provenance)) {
+      shiny::showNotification(
+        "The selected scored input does not match the records provider; training is blocked until the explicit input is selected.",
+        type = "error", duration = 10
       )
       initial_records <- curation_app_empty_records()
       snapshot_info <- list(records = NULL, id = NULL, version = NULL, revision = 0L, metadata = list())
@@ -2066,6 +2178,13 @@ curation_app_server <- function(input, output, session, context) {
     fresh <- tryCatch(read_records(TRUE), error = function(e) e)
     if (inherits(fresh, "error")) {
       shiny::showNotification(paste0("Snapshot refresh failed: ", conditionMessage(fresh)), type = "error", duration = 8)
+      return()
+    }
+    if (!curation_app_training_input_matches(fresh, model_input_provenance)) {
+      shiny::showNotification(
+        "Snapshot refresh returned records outside the explicitly selected scored input; the refresh was not persisted.",
+        type = "error", duration = 10
+      )
       return()
     }
     next_version <- tryCatch(
@@ -2265,7 +2384,31 @@ curation_app_server <- function(input, output, session, context) {
     if (is.null(fitted)) {
       return(shiny::helpText("No model published yet."))
     }
-    shiny::helpText(sprintf("Model: %s \u00b7 %d labels", fitted$learner_name %||% "selection", fitted$n_train %||% NA_integer_))
+    audit <- fitted$training_audit %||% list()
+    eligible <- audit$eligible %||% list()
+    exclusions <- audit$exclusions %||% list()
+    countries <- fitted$cv_by_country$country %||% character(0)
+    countries <- setdiff(as.character(countries), "all")
+    receipt <- fitted$training_provenance$cohort_receipt %||% list()
+    receipt_id <- receipt$id %||% receipt$receipt_id %||% NULL
+    input <- fitted$training_provenance$input %||% list()
+    input_id <- input$snapshot_id %||% input$version %||% NULL
+    exclusion_text <- paste0(
+      "unsure rows ", exclusions$unsure %||% 0L,
+      "; disagreement projects ", exclusions$disagreement %||% 0L,
+      "; unresolved projects ", exclusions$unresolved %||% 0L,
+      "; unmatched labels ", exclusions$unmatched %||% 0L,
+      "; incompatible score rows ", exclusions$incompatible %||% 0L
+    )
+    details <- c(
+      sprintf("Model: %s - %d eligible labels", fitted$learner_name %||% "selection", fitted$n_train %||% NA_integer_),
+      sprintf("Eligible keep/drop: %d/%d scored rows", eligible$keep %||% fitted$n_keep %||% 0L, eligible$drop %||% (fitted$n_train - (fitted$n_keep %||% 0L)) %||% 0L),
+      paste0("Excluded audit: ", exclusion_text),
+      sprintf("OOF random cohort: %s", if (length(countries) == 0L) "unavailable" else paste(countries, collapse = ", "))
+    )
+    if (!is.null(input_id)) details <- c(details, paste0("Input snapshot: ", input_id))
+    if (!is.null(receipt_id)) details <- c(details, paste0("Cohort receipt: ", receipt_id))
+    shiny::helpText(shiny::tagList(lapply(details, shiny::tags$div)))
   })
   output$learning_curve_plot <- plotly::renderPlotly({
     curation_app_learning_plot(learning_curve())
@@ -2295,17 +2438,32 @@ curation_app_server <- function(input, output, session, context) {
       as.integer(active_before$active_revision %||% active_before$revision %||% 0L)
     }
     provenance <- tryCatch(
-      curation_app_model_provenance(
-        scope = scope,
-        config = config,
-        records = records(),
-        reviews = reviews(),
-        actor = training_actor,
-        snapshot_version = snapshot_version(),
-        learner_key = input$learner %||% "logistic",
-        eval_source = "random",
-        threshold = model_threshold
-      ),
+      {
+        training_reviews <- curation_app_historical_review_rows(
+          reviews(),
+          historical_links = historical_links
+        )
+        input_identity <- curation_app_training_input_provenance(
+          base = model_input_provenance,
+          records = records(),
+          snapshot_id = snapshot_id(),
+          snapshot_version = snapshot_version()
+        )
+        curation_app_model_provenance(
+          scope = scope,
+          config = config,
+          records = records(),
+          reviews = training_reviews,
+          actor = training_actor,
+          snapshot_version = snapshot_version(),
+          snapshot_id = snapshot_id(),
+          learner_key = input$learner %||% "logistic",
+          eval_source = "random",
+          threshold = model_threshold,
+          input_provenance = input_identity,
+          cohort_receipt = cohort_receipt
+        )
+      },
       error = function(e) e
     )
     if (inherits(provenance, "error")) {
@@ -2314,11 +2472,22 @@ curation_app_server <- function(input, output, session, context) {
     }
     fitted <- tryCatch(
       shiny::withProgress(message = "Training selection model (cross-validating)...", value = 0.5, {
+        training_reviews <- curation_app_historical_review_rows(
+          reviews(),
+          historical_links = historical_links
+        )
         curation_train_model(
-          records(), reviews(), config,
+          records(), training_reviews, config,
           learner_key = input$learner %||% "logistic",
           eval_source = "random",
-          threshold = model_threshold
+          threshold = model_threshold,
+          input_provenance = curation_app_training_input_provenance(
+            base = model_input_provenance,
+            records = records(),
+            snapshot_id = snapshot_id(),
+            snapshot_version = snapshot_version()
+          ),
+          cohort_receipt = cohort_receipt
         )
       }),
       error = function(e) e
@@ -2327,6 +2496,8 @@ curation_app_server <- function(input, output, session, context) {
       shiny::showNotification(paste0("Training failed: ", conditionMessage(fitted)), type = "error", duration = 8)
       return()
     }
+    provenance$training_audit <- fitted$training_audit %||% list()
+    provenance$metrics <- fitted$cv_by_country %||% selection_cv_metrics(fitted, by_country = TRUE)
     publication_actor <- tryCatch(current_actor(), error = function(e) e)
     if (inherits(publication_actor, "error")) {
       shiny::showNotification(
@@ -3197,6 +3368,11 @@ curation_app_server <- function(input, output, session, context) {
 #'   module settings. It is absent by default.
 #' @param historical_reviews Optional data frame of imported historical review
 #'   linkage and attribution rows. Unresolved rows are shown read-only.
+#' @param input_provenance Optional BIOGAIN or caller-supplied identity for the
+#'   compatible scored input. The app adds the loaded snapshot identity and
+#'   content fingerprint before training.
+#' @param cohort_receipt Optional immutable historical-cohort receipt carried
+#'   into the model and publication provenance.
 #' @return A `shiny.appobj`.
 #' @export
 curation_app <- function(
@@ -3209,7 +3385,9 @@ curation_app <- function(
   actor_probe = NULL,
   logout_path = NULL,
   acquisition = NULL,
-  historical_reviews = NULL
+  historical_reviews = NULL,
+  input_provenance = NULL,
+  cohort_receipt = NULL
 ) {
   curation_app_require_ui()
   curation_check_config(config)
@@ -3228,6 +3406,8 @@ curation_app <- function(
     actor_probe = actor_probe,
     logout_path = logout_path,
     historical_reviews = historical_reviews,
+    input_provenance = input_provenance,
+    cohort_receipt = cohort_receipt,
     request = request,
     acquisition = curation_app_acquisition_service(acquisition),
     app_state = new.env(parent = emptyenv())
@@ -3258,6 +3438,8 @@ run_curation <- function(
   logout_path = NULL,
   acquisition = NULL,
   historical_reviews = NULL,
+  input_provenance = NULL,
+  cohort_receipt = NULL,
   ...
 ) {
   app <- curation_app(
@@ -3270,6 +3452,8 @@ run_curation <- function(
     logout_path = logout_path,
     acquisition = acquisition,
     historical_reviews = historical_reviews,
+    input_provenance = input_provenance,
+    cohort_receipt = cohort_receipt,
     request = request
   )
   shiny::runApp(app, launch.browser = launch.browser, ...)

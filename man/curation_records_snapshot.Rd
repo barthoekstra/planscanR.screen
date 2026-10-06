@@ -5,9 +5,21 @@
 \alias{curation_build_snapshot}
 \title{Read and enrich a corpus snapshot through an injected provider.}
 \usage{
-curation_records_snapshot(provider, config, countries = NULL, refresh = FALSE)
+curation_records_snapshot(
+  provider,
+  config,
+  countries = NULL,
+  refresh = FALSE,
+  preserve_scored_features = FALSE
+)
 
-curation_build_snapshot(provider, config, countries = NULL, refresh = FALSE)
+curation_build_snapshot(
+  provider,
+  config,
+  countries = NULL,
+  refresh = FALSE,
+  preserve_scored_features = FALSE
+)
 }
 \arguments{
 \item{provider}{A \code{planscanR_curation_records_provider}.}
@@ -17,6 +29,9 @@ curation_build_snapshot(provider, config, countries = NULL, refresh = FALSE)
 \item{countries}{Optional country filter.}
 
 \item{refresh}{If \code{TRUE}, call the provider's refresh callback.}
+
+\item{preserve_scored_features}{If \code{TRUE}, pass the verified scored-input
+preservation option through to \code{\link[=curation_enrich_records]{curation_enrich_records()}}.}
 }
 \value{
 An enriched corpus data frame.

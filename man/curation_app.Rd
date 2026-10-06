@@ -14,7 +14,9 @@ curation_app(
   actor_probe = NULL,
   logout_path = NULL,
   acquisition = NULL,
-  historical_reviews = NULL
+  historical_reviews = NULL,
+  input_provenance = NULL,
+  cohort_receipt = NULL
 )
 }
 \arguments{
@@ -44,6 +46,13 @@ module settings. It is absent by default.}
 
 \item{historical_reviews}{Optional data frame of imported historical review
 linkage and attribution rows. Unresolved rows are shown read-only.}
+
+\item{input_provenance}{Optional BIOGAIN or caller-supplied identity for the
+compatible scored input. The app adds the loaded snapshot identity and content
+fingerprint before training.}
+
+\item{cohort_receipt}{Optional immutable historical-cohort receipt carried
+into the model and publication provenance.}
 }
 \value{
 A \code{shiny.appobj}.
