@@ -114,6 +114,60 @@ testthat::test_that("campaign submissions are immutable and reuse durable work",
   catalog$close()
 })
 
+testthat::test_that("large campaign previews bound SQLite source lookups", {
+  testthat::skip_if_not_installed("DBI")
+  testthat::skip_if_not_installed("RSQLite")
+  testthat::skip_if_not_installed("openssl")
+
+  root <- withr::local_tempdir()
+  catalog <- acquisition_catalog_open(file.path(root, "catalog.sqlite"))
+  on.exit(acquisition_catalog_close(catalog), add = TRUE)
+  source_count <- 33000L
+  DBI::dbExecute(
+    catalog$conn,
+    paste(
+      "WITH RECURSIVE seq(i) AS (",
+      "SELECT 1 UNION ALL SELECT i + 1 FROM seq WHERE i < ?)",
+      "INSERT INTO acquisition_sources (source_ref_id, country, portal, native_project_id,",
+      "source_url, legacy_sidecar_path, metadata_blob, created_at)",
+      "SELECT 'scale-source-' || printf('%05d', i), 'nl', 'scale-portal',",
+      "'scale-project-' || printf('%05d', i), NULL, NULL, NULL, '2026-01-01T00:00:00Z'",
+      "FROM seq"
+    ),
+    params = list(source_count)
+  )
+  artifact <- file.path(root, "model.rds")
+  saveRDS(list(model = "fixture"), artifact)
+  source_ids <- sprintf("scale-source-%05d", seq_len(source_count))
+  selection <- data.frame(
+    source_ref_id = rev(source_ids),
+    selected = TRUE,
+    probability = 0.9,
+    stringsAsFactors = FALSE
+  )
+
+  preview <- acquisition_campaign_preview(
+    catalog,
+    selection = selection,
+    model_id = "model-scale-preview",
+    input_snapshot_id = "snapshot-scale-preview",
+    threshold = 0.5,
+    policy_version = "policy.scale-preview",
+    priority_rules = list(list(rule_id = "fallback", priority = 1L)),
+    artifact_path = artifact,
+    config_id = "config.scale-preview"
+  )
+
+  testthat::expect_identical(preview$counts$projects, source_count)
+  testthat::expect_identical(preview$counts$selected_projects, source_count)
+  testthat::expect_identical(preview$counts$jobs, 0L)
+  testthat::expect_identical(preview$items$source_ref_id, rev(source_ids))
+  testthat::expect_identical(
+    preview$items$native_project_id,
+    paste0("scale-project-", sprintf("%05d", rev(seq_len(source_count))))
+  )
+})
+
 testthat::test_that("reprioritization records a revision and leaves active work intact", {
   testthat::skip_if_not_installed("DBI")
   testthat::skip_if_not_installed("RSQLite")
