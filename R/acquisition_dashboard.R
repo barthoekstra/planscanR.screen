@@ -560,11 +560,21 @@ acquisition_dashboard_optional_input <- function(value) {
   as.character(value)
 }
 
-acquisition_dashboard_ui <- function(id = NULL) {
+acquisition_dashboard_ui <- function(id = NULL, preview = NULL) {
   ns <- if (is.null(id)) identity else shiny::NS(id)
+  campaign_panel <- if (is.null(preview)) {
+    shiny::tags$div(
+      id = ns("campaign-preview-unavailable"),
+      shiny::h2("Acquisition preview unavailable"),
+      shiny::p("A published model and campaign policy are required before preview or submission is available.")
+    )
+  } else {
+    acquisition_campaign_panel_ui(ns("campaign"))
+  }
   shiny::tagList(
     shiny::tags$div(
       id = ns("acquisition-dashboard"),
+      campaign_panel,
       shiny::h2("Acquisition dashboard"),
       shiny::textOutput(ns("dashboard-actor")),
       shiny::tags$div(
@@ -636,6 +646,8 @@ acquisition_dashboard_server <- function(
   actor_resolver,
   request = NULL,
   actor_probe = NULL,
+  preview = NULL,
+  submit_fn = acquisition_campaign_submit_authenticated,
   refresh_ms = 2000L,
   page_size = 50L
 ) {
@@ -651,6 +663,16 @@ acquisition_dashboard_server <- function(
   acquisition_controls_ensure_schema(catalog)
 
   shiny::moduleServer(id, function(input, output, session) {
+    if (!is.null(preview)) {
+      acquisition_campaign_panel_server(
+        id = "campaign",
+        catalog = catalog,
+        preview = preview,
+        actor_resolver = actor_resolver,
+        request = request,
+        submit_fn = submit_fn
+      )
+    }
     initial_actor <- curation_resolve_actor(
       actor_resolver,
       acquisition_dashboard_request(request, session)
@@ -837,6 +859,8 @@ acquisition_dashboard_app <- function(
   actor_resolver,
   request = NULL,
   actor_probe = NULL,
+  preview = NULL,
+  submit_fn = acquisition_campaign_submit_authenticated,
   refresh_ms = 2000L,
   page_size = 50L
 ) {
@@ -851,7 +875,7 @@ acquisition_dashboard_app <- function(
   page_size <- acquisition_dashboard_validate_page(1L, page_size)$page_size
   acquisition_controls_ensure_schema(catalog)
   shiny::shinyApp(
-    ui = shiny::fluidPage(acquisition_dashboard_ui("dashboard")),
+    ui = shiny::fluidPage(acquisition_dashboard_ui("dashboard", preview = preview)),
     server = function(input, output, session) {
       acquisition_dashboard_server(
         id = "dashboard",
@@ -859,6 +883,8 @@ acquisition_dashboard_app <- function(
         actor_resolver = actor_resolver,
         request = request,
         actor_probe = actor_probe,
+        preview = preview,
+        submit_fn = submit_fn,
         refresh_ms = refresh_ms,
         page_size = page_size
       )
@@ -878,6 +904,8 @@ run_acquisition_dashboard <- function(
   actor_resolver,
   request = NULL,
   actor_probe = NULL,
+  preview = NULL,
+  submit_fn = acquisition_campaign_submit_authenticated,
   refresh_ms = 2000L,
   page_size = 50L,
   launch.browser = interactive(),
@@ -888,6 +916,8 @@ run_acquisition_dashboard <- function(
     actor_resolver = actor_resolver,
     request = request,
     actor_probe = actor_probe,
+    preview = preview,
+    submit_fn = submit_fn,
     refresh_ms = refresh_ms,
     page_size = page_size
   )

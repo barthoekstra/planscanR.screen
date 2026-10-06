@@ -1159,7 +1159,10 @@ curation_app_acquisition_nav <- function(acquisition) {
   if (isTRUE(acquisition$available)) {
     return(bslib::nav_panel(
       "Acquisition",
-      acquisition_dashboard_ui("acquisition")
+      acquisition_dashboard_ui(
+        "acquisition",
+        preview = acquisition$preview %||% if (isTRUE(acquisition$available)) list(dynamic = TRUE) else NULL
+      )
     ))
   }
   bslib::nav_panel(
@@ -1507,7 +1510,48 @@ curation_app_read_reviews <- function(repository, scope, actor) {
   curation_app_normalize_reviews(rows)
 }
 
-curation_app_read_model <- function(store, scope, actor, config) {
+curation_app_model_snapshot_identity <- function(provenance, model) {
+  input <- if (is.list(provenance)) provenance$input %||% list() else list()
+  training <- if (is.list(model)) model$training_provenance %||% list() else list()
+  training_input <- if (is.list(training)) training$input %||% list() else list()
+  ids <- c(
+    input$snapshot_id,
+    input$version,
+    if (is.list(provenance)) provenance$corpus_snapshot$snapshot_id else NULL,
+    training_input$snapshot_id,
+    training_input$version
+  )
+  versions <- c(
+    input$snapshot_version,
+    input$version,
+    if (is.list(provenance)) provenance$snapshot_version else NULL,
+    if (is.list(provenance)) provenance$corpus_snapshot$version else NULL,
+    training_input$snapshot_version,
+    training_input$version
+  )
+  fingerprint <- c(
+    input$fingerprint,
+    input$record_fingerprint,
+    if (is.list(provenance)) provenance$record_fingerprint else NULL,
+    training_input$fingerprint,
+    training_input$record_fingerprint
+  )
+  first <- function(values) {
+    values <- values[!vapply(values, is.null, logical(1))]
+    if (length(values) == 0L) NULL else as.character(values[[1L]])
+  }
+  list(
+    id = first(ids),
+    version = first(versions),
+    fingerprint = first(fingerprint)
+  )
+}
+
+curation_app_model_snapshot_id <- function(provenance, model) {
+  curation_app_model_snapshot_identity(provenance, model)$id
+}
+
+curation_app_read_model_reference <- function(store, scope, actor, config = NULL) {
   active <- tryCatch(
     curation_artifact_active_model(store, scope, actor),
     error = function(e) NULL
@@ -1515,8 +1559,25 @@ curation_app_read_model <- function(store, scope, actor, config) {
   if (is.null(active)) {
     return(NULL)
   }
+  active_provenance <- if (is.list(active)) active$provenance %||% list() else list()
+  active_model_id <- if (is.list(active)) {
+    active$active_model_id %||% active$model_id %||% NULL
+  } else {
+    NULL
+  }
   if (inherits(active, "planscanR_selection_model")) {
-    return(active)
+    identity <- curation_app_model_snapshot_identity(active_provenance, active)
+    return(list(
+      model = active,
+      model_id = active_model_id,
+      input_snapshot_id = identity$id,
+      input_snapshot_version = identity$version,
+      input_snapshot_fingerprint = identity$fingerprint,
+      artifact_path = NULL,
+      provenance = active_provenance,
+      config_id = scope$config_id,
+      created_by = NULL
+    ))
   }
   payload <- if (is.list(active) && "model" %in% names(active)) {
     active[["model"]]
@@ -1526,20 +1587,24 @@ curation_app_read_model <- function(store, scope, actor, config) {
     NULL
   }
   if (inherits(payload, "planscanR_selection_model")) {
-    return(payload)
+    identity <- curation_app_model_snapshot_identity(active_provenance, payload)
+    return(list(
+      model = payload,
+      model_id = active_model_id,
+      input_snapshot_id = identity$id,
+      input_snapshot_version = identity$version,
+      input_snapshot_fingerprint = identity$fingerprint,
+      artifact_path = NULL,
+      provenance = active_provenance,
+      config_id = scope$config_id,
+      created_by = NULL
+    ))
   }
-  model_id <- if (is.list(active) && "active_model_id" %in% names(active)) {
-    active[["active_model_id"]]
-  } else if (is.list(active) && "model_id" %in% names(active)) {
-    active[["model_id"]]
-  } else {
-    NULL
-  }
-  if (is.null(model_id)) {
+  if (is.null(active_model_id)) {
     return(NULL)
   }
   loaded <- tryCatch(
-    curation_artifact_read_model(store, scope, model_id, actor),
+    curation_artifact_read_model(store, scope, active_model_id, actor),
     error = function(e) NULL
   )
   if (is.null(loaded)) {
@@ -1552,7 +1617,27 @@ curation_app_read_model <- function(store, scope, actor, config) {
   } else {
     NULL
   }
-  if (inherits(loaded_payload, "planscanR_selection_model")) loaded_payload else NULL
+  if (!inherits(loaded_payload, "planscanR_selection_model")) {
+    return(NULL)
+  }
+  loaded_provenance <- if (is.list(loaded)) loaded$provenance %||% active_provenance else active_provenance
+  identity <- curation_app_model_snapshot_identity(loaded_provenance, loaded_payload)
+  list(
+    model = loaded_payload,
+    model_id = as.character(active_model_id),
+    input_snapshot_id = identity$id,
+    input_snapshot_version = identity$version,
+    input_snapshot_fingerprint = identity$fingerprint,
+    artifact_path = if (is.list(loaded)) loaded$path %||% NULL else NULL,
+    provenance = loaded_provenance,
+    config_id = scope$config_id,
+    created_by = if (is.list(loaded_provenance)) loaded_provenance$creator %||% NULL else NULL
+  )
+}
+
+curation_app_read_model <- function(store, scope, actor, config) {
+  reference <- curation_app_read_model_reference(store, scope, actor, config)
+  if (is.null(reference)) NULL else reference$model
 }
 
 curation_app_read_sample <- function(store, scope, actor) {
@@ -1937,27 +2022,6 @@ curation_app_server <- function(input, output, session, context) {
   acquisition <- curation_app_acquisition_service(
     context$acquisition %||% context$acquisition_catalog
   )
-  if (!is.null(acquisition) && isTRUE(acquisition$available)) {
-    acquisition_actor_resolver <- acquisition$actor_resolver %||% context$actor_resolver
-    acquisition_actor_probe <- acquisition$actor_probe %||% context$actor_probe
-    tryCatch(
-      acquisition_dashboard_server(
-        id = "acquisition",
-        catalog = acquisition$catalog,
-        actor_resolver = acquisition_actor_resolver,
-        request = acquisition$request %||% context$request,
-        actor_probe = acquisition_actor_probe,
-        refresh_ms = acquisition$refresh_ms %||% 2000L,
-        page_size = acquisition$page_size %||% 50L
-      ),
-      error = function(error) {
-        shiny::showNotification(
-          paste0("Acquisition dashboard unavailable: ", conditionMessage(error)),
-          type = "warning", duration = 8
-        )
-      }
-    )
-  }
 
   # A session may outlive an account disablement or role change.  Recheck the
   # resolver periodically and close the socket when its credential is no
@@ -2127,7 +2191,13 @@ curation_app_server <- function(input, output, session, context) {
       ignoreInit = TRUE
     )
   }
-  model <- shiny::reactiveVal(curation_app_read_model(artifact_store, scope, actor, config))
+  initial_model_reference <- curation_app_read_model_reference(
+    artifact_store, scope, actor, config
+  )
+  model_reference <- shiny::reactiveVal(initial_model_reference)
+  model <- shiny::reactiveVal(
+    if (is.null(initial_model_reference)) NULL else initial_model_reference$model
+  )
   sample_info <- curation_app_read_sample(artifact_store, scope, actor)
   sample <- shiny::reactiveVal(sample_info$queue)
   sample_id <- shiny::reactiveVal(sample_info$id)
@@ -2316,6 +2386,53 @@ curation_app_server <- function(input, output, session, context) {
     if (!"selected_model" %in% names(data)) data$selected_model <- rep(FALSE, nrow(data))
     data
   })
+  acquisition_preview <- if (!is.null(acquisition) && isTRUE(acquisition$available)) {
+    shiny::reactive({
+      reference <- model_reference()
+      policy <- acquisition$policy %||% list()
+      policy_version <- acquisition$policy_version %||% policy$policy_version %||% NULL
+      priority_rules <- acquisition$priority_rules %||% policy$priority_rules %||% NULL
+      if (is.null(reference) || is.null(policy_version) || is.null(priority_rules)) {
+        return(NULL)
+      }
+      acquisition_campaign_preview_from_curation(
+        catalog = acquisition$catalog,
+        model_reference = reference,
+        records = selected_records(),
+        threshold = suppressWarnings(as.numeric(input$model_threshold %||% 0.5)),
+        policy_version = policy_version,
+        priority_rules = priority_rules,
+        records_snapshot_id = snapshot_id(),
+        records_snapshot_version = snapshot_version(),
+        records_snapshot_fingerprint = curation_artifact_content_fingerprint(records())
+      )
+    })
+  } else {
+    NULL
+  }
+  if (!is.null(acquisition) && isTRUE(acquisition$available)) {
+    acquisition_actor_resolver <- acquisition$actor_resolver %||% context$actor_resolver
+    acquisition_actor_probe <- acquisition$actor_probe %||% context$actor_probe
+    tryCatch(
+      acquisition_dashboard_server(
+        id = "acquisition",
+        catalog = acquisition$catalog,
+        actor_resolver = acquisition_actor_resolver,
+        request = acquisition$request %||% context$request,
+        actor_probe = acquisition_actor_probe,
+        preview = acquisition$preview %||% acquisition_preview %||% NULL,
+        submit_fn = acquisition$campaign_submit_fn %||% acquisition_campaign_submit_authenticated,
+        refresh_ms = acquisition$refresh_ms %||% 2000L,
+        page_size = acquisition$page_size %||% 50L
+      ),
+      error = function(error) {
+        shiny::showNotification(
+          paste0("Acquisition dashboard unavailable: ", conditionMessage(error)),
+          type = "warning", duration = 8
+        )
+      }
+    )
+  }
   countries_debounced <- shiny::debounce(shiny::reactive(selected_countries()), 500)
   filtered <- shiny::reactive({
     data <- selected_records()
@@ -2534,6 +2651,24 @@ curation_app_server <- function(input, output, session, context) {
       return()
     }
     model(fitted)
+    model_reference(
+      curation_app_read_model_reference(
+        artifact_store,
+        scope,
+        publication_actor,
+        config
+      ) %||% list(
+        model = fitted,
+        model_id = published$active_model_id %||% published$model_id %||% NULL,
+        input_snapshot_id = snapshot_id(),
+        input_snapshot_version = snapshot_version(),
+        input_snapshot_fingerprint = curation_artifact_content_fingerprint(records()),
+        artifact_path = NULL,
+        provenance = provenance,
+        config_id = scope$config_id,
+        created_by = publication_actor$id
+      )
+    )
     shiny::showNotification("Selection model trained.", type = "message")
   })
   shiny::observeEvent(input$compute_lc, {

@@ -219,54 +219,8 @@ acquisition_campaign_match_rule <- function(rules, country, energy_kind, energy_
 }
 
 acquisition_campaign_items_from_selection <- function(catalog, selection, threshold = NULL) {
-  if (!is.data.frame(selection)) {
-    acquisition_campaign_abort("{.arg selection} must be a data frame.")
-  }
-  if (nrow(selection) == 0L) {
-    acquisition_campaign_abort("{.arg selection} must contain at least one source.")
-  }
-  if ("source_ref_id" %in% names(selection)) {
-    source_ids <- as.character(selection$source_ref_id)
-  } else if (all(c("country", "portal", "native_project_id") %in% names(selection))) {
-    source_ids <- vapply(seq_len(nrow(selection)), function(i) {
-      row <- acquisition_catalog_one(
-        acquisition_catalog_connection(catalog),
-        paste(
-          "SELECT source_ref_id FROM acquisition_sources",
-          "WHERE country = ? AND portal = ? AND native_project_id = ?"
-        ),
-        params = list(
-          as.character(selection$country[[i]]),
-          as.character(selection$portal[[i]]),
-          as.character(selection$native_project_id[[i]])
-        )
-      )
-      if (is.null(row)) NA_character_ else as.character(row$source_ref_id[[1L]])
-    }, character(1))
-  } else if (all(c("country", "portal", "document_id") %in% names(selection))) {
-    source_ids <- vapply(seq_len(nrow(selection)), function(i) {
-      row <- acquisition_catalog_one(
-        acquisition_catalog_connection(catalog),
-        paste(
-          "SELECT source_ref_id FROM acquisition_sources",
-          "WHERE country = ? AND portal = ? AND native_project_id = ?"
-        ),
-        params = list(
-          as.character(selection$country[[i]]),
-          as.character(selection$portal[[i]]),
-          as.character(selection$document_id[[i]])
-        )
-      )
-      if (is.null(row)) NA_character_ else as.character(row$source_ref_id[[1L]])
-    }, character(1))
-  } else {
-    acquisition_campaign_abort(
-      "{.arg selection} must include {.field source_ref_id} or country, portal, and native_project_id."
-    )
-  }
-  if (anyNA(source_ids) || any(!nzchar(source_ids)) || anyDuplicated(source_ids)) {
-    acquisition_campaign_abort("{.field source_ref_id} values must be unique and non-empty.")
-  }
+  source_rows <- acquisition_campaign_source_rows(catalog, selection)
+  source_ids <- source_rows$source_ref_id
   lapply(seq_len(nrow(selection)), function(i) {
     probability <- acquisition_campaign_column_value(selection, i, c("probability", "select_prob", "selection_probability", "score"))
     probability <- acquisition_campaign_probability(probability)
@@ -301,6 +255,9 @@ acquisition_campaign_items_from_selection <- function(catalog, selection, thresh
     list(
       item_key = source_ids[[i]],
       source_ref_id = source_ids[[i]],
+      country = as.character(source_rows$country[[i]]),
+      portal = as.character(source_rows$portal[[i]]),
+      native_project_id = as.character(source_rows$native_project_id[[i]]),
       selected = selected,
       probability = probability,
       energy_tags = unique(tags),
