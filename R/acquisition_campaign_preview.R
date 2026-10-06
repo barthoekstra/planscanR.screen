@@ -85,15 +85,18 @@ acquisition_campaign_source_rows <- function(catalog, selection) {
   if (anyNA(source_ids) || any(!nzchar(source_ids)) || anyDuplicated(source_ids)) {
     acquisition_campaign_identity_abort("Selection source identities must be unique, known, and non-empty.")
   }
-  placeholders <- paste(rep("?", length(source_ids)), collapse = ",")
-  rows <- DBI::dbGetQuery(
-    conn,
-    paste(
-      "SELECT source_ref_id, country, portal, native_project_id FROM acquisition_sources",
-      "WHERE source_ref_id IN (", placeholders, ") ORDER BY source_ref_id"
-    ),
-    params = as.list(source_ids)
-  )
+  chunks <- split(source_ids, ceiling(seq_along(source_ids) / 900L))
+  rows <- do.call(rbind, lapply(chunks, function(chunk) {
+    placeholders <- paste(rep("?", length(chunk)), collapse = ",")
+    DBI::dbGetQuery(
+      conn,
+      paste(
+        "SELECT source_ref_id, country, portal, native_project_id FROM acquisition_sources",
+        "WHERE source_ref_id IN (", placeholders, ") ORDER BY source_ref_id"
+      ),
+      params = as.list(chunk)
+    )
+  }))
   if (nrow(rows) != length(source_ids)) {
     acquisition_campaign_identity_abort("Every selected source must already exist in the acquisition catalog.")
   }
@@ -110,6 +113,13 @@ acquisition_campaign_source_rows <- function(catalog, selection) {
     }
   }
   rows
+}
+
+acquisition_campaign_validate_items_for_preview <- function(catalog, items) {
+  chunks <- split(seq_along(items), ceiling(seq_along(items) / 900L))
+  do.call(c, lapply(chunks, function(indices) {
+    acquisition_campaign_validate_items(catalog, items[indices])
+  }))
 }
 
 acquisition_campaign_selection_from_records <- function(catalog, records, threshold) {
@@ -388,7 +398,7 @@ acquisition_campaign_preview <- function(
   }
   rules <- acquisition_campaign_normalise_rules(priority_rules)
   items <- acquisition_campaign_items_from_selection(catalog, selection, threshold = threshold)
-  items <- acquisition_campaign_validate_items(catalog, items)
+  items <- acquisition_campaign_validate_items_for_preview(catalog, items)
   for (i in seq_along(items)) {
     match <- acquisition_campaign_match_rule(
       rules, items[[i]]$country, items[[i]]$energy_kind, items[[i]]$energy_tags
