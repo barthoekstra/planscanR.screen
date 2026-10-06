@@ -1129,9 +1129,53 @@ curation_app_validate_logout_path <- function(logout_path) {
   logout_path
 }
 
-curation_app_ui <- function(config, logout_path = NULL) {
+curation_app_acquisition_service <- function(service) {
+  if (is.null(service)) {
+    return(NULL)
+  }
+  if (inherits(service, "planscanR_acquisition_catalog")) {
+    return(list(catalog = service, available = TRUE))
+  }
+  if (!is.list(service)) {
+    return(list(available = FALSE, reason = "The acquisition service is unavailable."))
+  }
+  available <- if (is.null(service$available)) {
+    inherits(service$catalog, "planscanR_acquisition_catalog")
+  } else {
+    isTRUE(service$available)
+  }
+  if (available && !inherits(service$catalog, "planscanR_acquisition_catalog")) {
+    available <- FALSE
+  }
+  service$available <- available
+  service$reason <- as.character(service$reason %||% "The acquisition catalog is unavailable.")[[1L]]
+  service
+}
+
+curation_app_acquisition_nav <- function(acquisition) {
+  if (is.null(acquisition)) {
+    return(NULL)
+  }
+  if (isTRUE(acquisition$available)) {
+    return(bslib::nav_panel(
+      "Acquisition",
+      acquisition_dashboard_ui("acquisition")
+    ))
+  }
+  bslib::nav_panel(
+    "Acquisition",
+    shiny::tags$div(
+      id = "acquisition-unavailable",
+      shiny::h3("Acquisition unavailable"),
+      shiny::p(acquisition$reason %||% "The acquisition catalog is unavailable.")
+    )
+  )
+}
+
+curation_app_ui <- function(config, logout_path = NULL, acquisition = NULL) {
   curation_app_require_ui()
   logout_path <- curation_app_validate_logout_path(logout_path)
+  acquisition <- curation_app_acquisition_service(acquisition)
   selection_defaults <- config$selection_controls
   default_value <- function(name, fallback) {
     value <- selection_defaults[[name]]
@@ -1448,7 +1492,8 @@ curation_app_ui <- function(config, logout_path = NULL) {
           shiny$uiOutput("sr_decision")
         )
       )
-    )
+    ),
+    curation_app_acquisition_nav(acquisition)
   )
 }
 
@@ -1789,6 +1834,31 @@ curation_app_server <- function(input, output, session, context) {
   scope <- config$identity
   reviewer_id <- actor$id
   session$sendCustomMessage("curationSetReviewer", list(id = reviewer_id))
+
+  acquisition <- curation_app_acquisition_service(
+    context$acquisition %||% context$acquisition_catalog
+  )
+  if (!is.null(acquisition) && isTRUE(acquisition$available)) {
+    acquisition_actor_resolver <- acquisition$actor_resolver %||% context$actor_resolver
+    acquisition_actor_probe <- acquisition$actor_probe %||% context$actor_probe
+    tryCatch(
+      acquisition_dashboard_server(
+        id = "acquisition",
+        catalog = acquisition$catalog,
+        actor_resolver = acquisition_actor_resolver,
+        request = acquisition$request %||% context$request,
+        actor_probe = acquisition_actor_probe,
+        refresh_ms = acquisition$refresh_ms %||% 2000L,
+        page_size = acquisition$page_size %||% 50L
+      ),
+      error = function(error) {
+        shiny::showNotification(
+          paste0("Acquisition dashboard unavailable: ", conditionMessage(error)),
+          type = "warning", duration = 8
+        )
+      }
+    )
+  }
 
   # A session may outlive an account disablement or role change.  Recheck the
   # resolver periodically and close the socket when its credential is no
@@ -3122,6 +3192,9 @@ curation_app_server <- function(input, output, session, context) {
 #'   socket-expiry check. Mutation paths always use `actor_resolver`.
 #' @param logout_path Optional local POST path rendered as a visible Log out
 #'   control, for example `/app/logout`. It is absent by default.
+#' @param acquisition Optional injected acquisition service. A catalog can be
+#'   supplied directly, or a list with `catalog`, `available`, and optional
+#'   module settings. It is absent by default.
 #' @param historical_reviews Optional data frame of imported historical review
 #'   linkage and attribution rows. Unresolved rows are shown read-only.
 #' @return A `shiny.appobj`.
@@ -3135,6 +3208,7 @@ curation_app <- function(
   request = NULL,
   actor_probe = NULL,
   logout_path = NULL,
+  acquisition = NULL,
   historical_reviews = NULL
 ) {
   curation_app_require_ui()
@@ -3155,10 +3229,11 @@ curation_app <- function(
     logout_path = logout_path,
     historical_reviews = historical_reviews,
     request = request,
+    acquisition = curation_app_acquisition_service(acquisition),
     app_state = new.env(parent = emptyenv())
   )
   shiny::shinyApp(
-    ui = curation_app_ui(config, logout_path = logout_path),
+    ui = curation_app_ui(config, logout_path = logout_path, acquisition = acquisition),
     server = function(input, output, session) curation_app_server(input, output, session, context)
   )
 }
@@ -3181,6 +3256,7 @@ run_curation <- function(
   launch.browser = interactive(),
   actor_probe = NULL,
   logout_path = NULL,
+  acquisition = NULL,
   historical_reviews = NULL,
   ...
 ) {
@@ -3192,6 +3268,7 @@ run_curation <- function(
     actor_resolver = actor_resolver,
     actor_probe = actor_probe,
     logout_path = logout_path,
+    acquisition = acquisition,
     historical_reviews = historical_reviews,
     request = request
   )

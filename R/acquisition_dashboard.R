@@ -547,7 +547,8 @@ acquisition_dashboard_request <- function(request, session) {
     return(request(session = session))
   }
   if (is.null(request)) {
-    return(list(session = session))
+    session_request <- tryCatch(session$request, error = function(error) NULL)
+    return(list(session = session, request = session_request))
   }
   request
 }
@@ -559,59 +560,262 @@ acquisition_dashboard_optional_input <- function(value) {
   as.character(value)
 }
 
-acquisition_dashboard_ui <- function() {
+acquisition_dashboard_ui <- function(id = NULL) {
+  ns <- if (is.null(id)) identity else shiny::NS(id)
   shiny::tagList(
     shiny::tags$div(
-      id = "acquisition-dashboard",
+      id = ns("acquisition-dashboard"),
       shiny::h2("Acquisition dashboard"),
-      shiny::textOutput("dashboard-actor"),
+      shiny::textOutput(ns("dashboard-actor")),
       shiny::tags$div(
-        id = "dashboard-summary",
+        id = ns("dashboard-summary"),
         shiny::h3("Progress"),
-        shiny::tableOutput("dashboard-progress"),
+        shiny::tableOutput(ns("dashboard-progress")),
         shiny::h3("Projects by country and energy"),
-        shiny::tableOutput("dashboard-project-counts"),
+        shiny::tableOutput(ns("dashboard-project-counts")),
         shiny::h3("Files"),
-        shiny::tableOutput("dashboard-file-counts"),
+        shiny::tableOutput(ns("dashboard-file-counts")),
         shiny::h3("Queue stages"),
-        shiny::tableOutput("dashboard-stage-counts"),
+        shiny::tableOutput(ns("dashboard-stage-counts")),
         shiny::h3("Active workers and heartbeats"),
-        shiny::tableOutput("dashboard-workers"),
+        shiny::tableOutput(ns("dashboard-workers")),
         shiny::h3("Unknown or error totals"),
-        shiny::tableOutput("dashboard-unknown")
+        shiny::tableOutput(ns("dashboard-unknown"))
       ),
       shiny::tags$div(
-        id = "dashboard-queue-panel",
+        id = ns("dashboard-queue-panel"),
         shiny::h3("Queue"),
         shiny::tags$div(
-          id = "dashboard-queue-filters",
-          shiny::textInput("dashboard-filter-campaign", "Campaign", value = ""),
-          shiny::textInput("dashboard-filter-country", "Country", value = ""),
-          shiny::textInput("dashboard-filter-energy", "Energy", value = ""),
+          id = ns("dashboard-queue-filters"),
+          shiny::textInput(ns("dashboard-filter-campaign"), "Campaign", value = ""),
+          shiny::textInput(ns("dashboard-filter-country"), "Country", value = ""),
+          shiny::textInput(ns("dashboard-filter-energy"), "Energy", value = ""),
           shiny::selectInput(
-            "dashboard-filter-state",
+            ns("dashboard-filter-state"),
             "State",
             choices = c("All" = "", "queued", "running", "retry_wait", "blocked", "succeeded", "failed", "cancelled")
           ),
-          shiny::textInput("dashboard-filter-portal", "Portal", value = ""),
-          shiny::textInput("dashboard-filter-search", "Search", value = ""),
-          shiny::numericInput("dashboard-page", "Queue page", value = 1L, min = 1L, step = 1L),
-          shiny::numericInput("dashboard-page-size", "Rows per page", value = 50L, min = 1L, max = 500L, step = 1L),
-          shiny::actionButton("dashboard-page-prev", "Previous page"),
-          shiny::actionButton("dashboard-page-next", "Next page"),
-          shiny::textOutput("dashboard-page-info")
+          shiny::textInput(ns("dashboard-filter-portal"), "Portal", value = ""),
+          shiny::textInput(ns("dashboard-filter-search"), "Search", value = ""),
+          shiny::numericInput(ns("dashboard-page"), "Queue page", value = 1L, min = 1L, step = 1L),
+          shiny::numericInput(ns("dashboard-page-size"), "Rows per page", value = 50L, min = 1L, max = 500L, step = 1L),
+          shiny::actionButton(ns("dashboard-page-prev"), "Previous page"),
+          shiny::actionButton(ns("dashboard-page-next"), "Next page"),
+          shiny::textOutput(ns("dashboard-page-info"))
         ),
-        shiny::tableOutput("dashboard-queue"),
+        shiny::tableOutput(ns("dashboard-queue")),
         shiny::h3("Administrator controls"),
-        shiny::selectInput("dashboard-action", "Action", choices = c("pause", "resume", "retry", "cancel")),
-        shiny::selectInput("dashboard-target-type", "Target type", choices = c("job", "campaign")),
-        shiny::selectInput("dashboard-target-id", "Target", choices = character(0)),
-        shiny::textInput("dashboard-reason", "Reason"),
-        shiny::actionButton("dashboard-apply", "Apply control"),
-        shiny::textOutput("dashboard-action-result")
+        shiny::selectInput(ns("dashboard-action"), "Action", choices = c("pause", "resume", "retry", "cancel")),
+        shiny::selectInput(ns("dashboard-target-type"), "Target type", choices = c("job", "campaign")),
+        shiny::selectInput(ns("dashboard-target-id"), "Target", choices = character(0)),
+        shiny::textInput(ns("dashboard-reason"), "Reason"),
+        shiny::actionButton(ns("dashboard-apply"), "Apply control"),
+        shiny::textOutput(ns("dashboard-action-result"))
       )
     )
   )
+}
+
+#' Run the server portion of the namespaced acquisition dashboard module.
+#'
+#' The module only reads the injected catalog and submits authenticated control
+#' requests. It never owns acquisition workers or curation snapshots.
+#'
+#' @param id Shiny module namespace.
+#' @param catalog A catalog from [acquisition_catalog_open()].
+#' @param actor_resolver A trusted authenticated actor resolver.
+#' @param request Optional deployment request or function accepting `session`.
+#' @param actor_probe Optional non-touching resolver used for session checks.
+#' @param refresh_ms Database refresh interval in milliseconds.
+#' @param page_size Queue rows shown per refresh.
+#' @return The value returned by [shiny::moduleServer()].
+#' @export
+acquisition_dashboard_server <- function(
+  id,
+  catalog,
+  actor_resolver,
+  request = NULL,
+  actor_probe = NULL,
+  refresh_ms = 2000L,
+  page_size = 50L
+) {
+  acquisition_dashboard_require_ui()
+  acquisition_catalog_connection(catalog)
+  acquisition_controls_check_resolver(actor_resolver)
+  if (!is.null(actor_probe)) acquisition_controls_check_resolver(actor_probe)
+  refresh_ms <- suppressWarnings(as.integer(refresh_ms))
+  if (length(refresh_ms) != 1L || is.na(refresh_ms) || refresh_ms < 250L || refresh_ms > 600000L) {
+    acquisition_controls_abort("{.arg refresh_ms} must be between 250 and 600000 milliseconds.")
+  }
+  page_size <- acquisition_dashboard_validate_page(1L, page_size)$page_size
+  acquisition_controls_ensure_schema(catalog)
+
+  shiny::moduleServer(id, function(input, output, session) {
+    initial_actor <- curation_resolve_actor(
+      actor_resolver,
+      acquisition_dashboard_request(request, session)
+    )
+    output$`dashboard-actor` <- shiny::renderText({
+      paste("Authenticated actor:", initial_actor$id, "(", paste(initial_actor$roles, collapse = ", "), ")")
+    })
+    summary <- shiny::reactivePoll(
+      refresh_ms,
+      session,
+      checkFunc = function() acquisition_dashboard_poll_token(catalog),
+      valueFunc = function() acquisition_dashboard_summary(catalog)
+    )
+    queue_page <- shiny::reactiveVal(1L)
+    queue_page_size <- shiny::reactive({
+      value <- suppressWarnings(as.integer(input$`dashboard-page-size`))
+      if (length(value) != 1L || is.na(value) || value < 1L || value > 500L) page_size else value
+    })
+    shiny::observeEvent(input$`dashboard-page`,
+      {
+        value <- suppressWarnings(as.integer(input$`dashboard-page`))
+        if (length(value) == 1L && !is.na(value) && value >= 1L) queue_page(value)
+      },
+      ignoreInit = TRUE
+    )
+    shiny::observeEvent(input$`dashboard-page-size`,
+      {
+        queue_page(1L)
+        shiny::updateNumericInput(session, "dashboard-page", value = 1L)
+      },
+      ignoreInit = TRUE
+    )
+    shiny::observeEvent(
+      list(
+        input$`dashboard-filter-campaign`, input$`dashboard-filter-country`,
+        input$`dashboard-filter-energy`, input$`dashboard-filter-state`,
+        input$`dashboard-filter-portal`, input$`dashboard-filter-search`
+      ),
+      {
+        queue_page(1L)
+        shiny::updateNumericInput(session, "dashboard-page", value = 1L)
+      },
+      ignoreInit = TRUE
+    )
+    shiny::observeEvent(input$`dashboard-page-prev`,
+      {
+        next_page <- max(1L, queue_page() - 1L)
+        queue_page(next_page)
+        shiny::updateNumericInput(session, "dashboard-page", value = next_page)
+      },
+      ignoreInit = TRUE
+    )
+    shiny::observeEvent(input$`dashboard-page-next`,
+      {
+        rows <- queue()
+        total <- as.integer(attr(rows, "total_count") %||% 0L)
+        max_page <- max(1L, ceiling(total / queue_page_size()))
+        next_page <- min(max_page, queue_page() + 1L)
+        queue_page(next_page)
+        shiny::updateNumericInput(session, "dashboard-page", value = next_page)
+      },
+      ignoreInit = TRUE
+    )
+    queue <- shiny::reactive({
+      summary()
+      acquisition_dashboard_jobs(
+        catalog,
+        campaign_id = acquisition_dashboard_optional_input(input$`dashboard-filter-campaign`),
+        country = acquisition_dashboard_optional_input(input$`dashboard-filter-country`),
+        energy = acquisition_dashboard_optional_input(input$`dashboard-filter-energy`),
+        state = acquisition_dashboard_optional_input(input$`dashboard-filter-state`),
+        portal = acquisition_dashboard_optional_input(input$`dashboard-filter-portal`),
+        search = acquisition_dashboard_optional_input(input$`dashboard-filter-search`),
+        page = queue_page(),
+        page_size = queue_page_size()
+      )
+    })
+    output$`dashboard-progress` <- shiny::renderTable(
+      {
+        progress <- summary()$progress
+        as.data.frame(progress, stringsAsFactors = FALSE)
+      },
+      rownames = TRUE
+    )
+    output$`dashboard-project-counts` <- shiny::renderTable(summary()$project_counts, striped = TRUE)
+    output$`dashboard-file-counts` <- shiny::renderTable(summary()$file_counts, striped = TRUE)
+    output$`dashboard-stage-counts` <- shiny::renderTable(summary()$stage_counts, striped = TRUE)
+    output$`dashboard-workers` <- shiny::renderTable(summary()$workers, striped = TRUE)
+    output$`dashboard-unknown` <- shiny::renderTable(
+      {
+        totals <- summary()$unknown_totals
+        as.data.frame(totals, stringsAsFactors = FALSE)
+      },
+      rownames = TRUE
+    )
+    output$`dashboard-queue` <- shiny::renderTable(queue(), striped = TRUE)
+    output$`dashboard-page-info` <- shiny::renderText({
+      rows <- queue()
+      total <- as.integer(attr(rows, "total_count") %||% 0L)
+      max_page <- max(1L, ceiling(total / queue_page_size()))
+      paste("Page", queue_page(), "of", max_page, "(", total, "jobs)")
+    })
+    target_choices <- NULL
+    shiny::observe({
+      choices <- character(0)
+      if (identical(input$`dashboard-target-type`, "job")) {
+        rows <- queue()
+        if (nrow(rows) > 0L) choices <- stats::setNames(rows$job_id, rows$job_id)
+      } else {
+        campaigns <- acquisition_campaigns(catalog)
+        if (nrow(campaigns) > 0L) choices <- stats::setNames(campaigns$campaign_id, campaigns$campaign_id)
+      }
+      if (!identical(choices, target_choices)) {
+        selected <- shiny::isolate(input$`dashboard-target-id`)
+        if (is.null(selected) || length(selected) != 1L || !selected %in% unname(choices)) {
+          selected <- if (length(choices) > 0L) unname(choices[[1L]]) else character(0)
+        }
+        shiny::updateSelectInput(session, "dashboard-target-id", choices = choices, selected = selected)
+        target_choices <<- choices
+      }
+    })
+    output$`dashboard-action-result` <- shiny::renderText({
+      if (is.null(input$`dashboard-apply`) || input$`dashboard-apply` < 1L) {
+        return("No control action submitted.")
+      }
+      "Choose a target and apply an administrator control."
+    })
+    shiny::observeEvent(input$`dashboard-apply`,
+      {
+        result <- tryCatch(
+          acquisition_control_apply(
+            catalog = catalog,
+            action = input$`dashboard-action`,
+            target_type = input$`dashboard-target-type`,
+            target_id = input$`dashboard-target-id`,
+            actor_resolver = actor_resolver,
+            request = acquisition_dashboard_request(request, session),
+            reason = input$`dashboard-reason`
+          ),
+          error = function(error) error
+        )
+        if (inherits(result, "error")) {
+          output$`dashboard-action-result` <- shiny::renderText(conditionMessage(result))
+        } else {
+          output$`dashboard-action-result` <- shiny::renderText(
+            paste0(result$action, " recorded as ", result$status, " by ", result$actor_id, ". Audit: ", result$audit_id)
+          )
+        }
+      },
+      ignoreInit = TRUE
+    )
+    if (!is.null(actor_probe)) {
+      auth_timer <- shiny::reactiveTimer(60000, session)
+      shiny::observeEvent(auth_timer(),
+        {
+          tryCatch(
+            curation_resolve_actor(actor_probe, acquisition_dashboard_request(request, session)),
+            error = function(error) if (is.function(session$close)) session$close()
+          )
+        },
+        ignoreInit = TRUE
+      )
+    }
+    invisible(NULL)
+  })
 }
 
 #' Build the standalone authenticated acquisition dashboard Shiny app.
@@ -647,171 +851,17 @@ acquisition_dashboard_app <- function(
   page_size <- acquisition_dashboard_validate_page(1L, page_size)$page_size
   acquisition_controls_ensure_schema(catalog)
   shiny::shinyApp(
-    ui = shiny::fluidPage(acquisition_dashboard_ui()),
+    ui = shiny::fluidPage(acquisition_dashboard_ui("dashboard")),
     server = function(input, output, session) {
-      initial_actor <- curation_resolve_actor(
-        actor_resolver,
-        acquisition_dashboard_request(request, session)
+      acquisition_dashboard_server(
+        id = "dashboard",
+        catalog = catalog,
+        actor_resolver = actor_resolver,
+        request = request,
+        actor_probe = actor_probe,
+        refresh_ms = refresh_ms,
+        page_size = page_size
       )
-      output$`dashboard-actor` <- shiny::renderText({
-        paste("Authenticated actor:", initial_actor$id, "(", paste(initial_actor$roles, collapse = ", "), ")")
-      })
-      summary <- shiny::reactivePoll(
-        refresh_ms,
-        session,
-        checkFunc = function() acquisition_dashboard_poll_token(catalog),
-        valueFunc = function() acquisition_dashboard_summary(catalog)
-      )
-      queue_page <- shiny::reactiveVal(1L)
-      queue_page_size <- shiny::reactive({
-        value <- suppressWarnings(as.integer(input$`dashboard-page-size`))
-        if (length(value) != 1L || is.na(value) || value < 1L || value > 500L) page_size else value
-      })
-      shiny::observeEvent(input$`dashboard-page`,
-        {
-          value <- suppressWarnings(as.integer(input$`dashboard-page`))
-          if (length(value) == 1L && !is.na(value) && value >= 1L) queue_page(value)
-        },
-        ignoreInit = TRUE
-      )
-      shiny::observeEvent(input$`dashboard-page-size`,
-        {
-          queue_page(1L)
-          shiny::updateNumericInput(session, "dashboard-page", value = 1L)
-        },
-        ignoreInit = TRUE
-      )
-      shiny::observeEvent(
-        list(
-          input$`dashboard-filter-campaign`, input$`dashboard-filter-country`,
-          input$`dashboard-filter-energy`, input$`dashboard-filter-state`,
-          input$`dashboard-filter-portal`, input$`dashboard-filter-search`
-        ),
-        {
-          queue_page(1L)
-          shiny::updateNumericInput(session, "dashboard-page", value = 1L)
-        },
-        ignoreInit = TRUE
-      )
-      shiny::observeEvent(input$`dashboard-page-prev`,
-        {
-          next_page <- max(1L, queue_page() - 1L)
-          queue_page(next_page)
-          shiny::updateNumericInput(session, "dashboard-page", value = next_page)
-        },
-        ignoreInit = TRUE
-      )
-      shiny::observeEvent(input$`dashboard-page-next`,
-        {
-          rows <- queue()
-          total <- as.integer(attr(rows, "total_count") %||% 0L)
-          max_page <- max(1L, ceiling(total / queue_page_size()))
-          next_page <- min(max_page, queue_page() + 1L)
-          queue_page(next_page)
-          shiny::updateNumericInput(session, "dashboard-page", value = next_page)
-        },
-        ignoreInit = TRUE
-      )
-      queue <- shiny::reactive({
-        summary()
-        acquisition_dashboard_jobs(
-          catalog,
-          campaign_id = acquisition_dashboard_optional_input(input$`dashboard-filter-campaign`),
-          country = acquisition_dashboard_optional_input(input$`dashboard-filter-country`),
-          energy = acquisition_dashboard_optional_input(input$`dashboard-filter-energy`),
-          state = acquisition_dashboard_optional_input(input$`dashboard-filter-state`),
-          portal = acquisition_dashboard_optional_input(input$`dashboard-filter-portal`),
-          search = acquisition_dashboard_optional_input(input$`dashboard-filter-search`),
-          page = queue_page(),
-          page_size = queue_page_size()
-        )
-      })
-      output$`dashboard-progress` <- shiny::renderTable(
-        {
-          progress <- summary()$progress
-          as.data.frame(progress, stringsAsFactors = FALSE)
-        },
-        rownames = TRUE
-      )
-      output$`dashboard-project-counts` <- shiny::renderTable(summary()$project_counts, striped = TRUE)
-      output$`dashboard-file-counts` <- shiny::renderTable(summary()$file_counts, striped = TRUE)
-      output$`dashboard-stage-counts` <- shiny::renderTable(summary()$stage_counts, striped = TRUE)
-      output$`dashboard-workers` <- shiny::renderTable(summary()$workers, striped = TRUE)
-      output$`dashboard-unknown` <- shiny::renderTable(
-        {
-          totals <- summary()$unknown_totals
-          as.data.frame(totals, stringsAsFactors = FALSE)
-        },
-        rownames = TRUE
-      )
-      output$`dashboard-queue` <- shiny::renderTable(queue(), striped = TRUE)
-      output$`dashboard-page-info` <- shiny::renderText({
-        rows <- queue()
-        total <- as.integer(attr(rows, "total_count") %||% 0L)
-        max_page <- max(1L, ceiling(total / queue_page_size()))
-        paste("Page", queue_page(), "of", max_page, "(", total, "jobs)")
-      })
-      target_choices <- NULL
-      shiny::observe({
-        choices <- character(0)
-        if (identical(input$`dashboard-target-type`, "job")) {
-          rows <- queue()
-          if (nrow(rows) > 0L) choices <- stats::setNames(rows$job_id, rows$job_id)
-        } else {
-          campaigns <- acquisition_campaigns(catalog)
-          if (nrow(campaigns) > 0L) choices <- stats::setNames(campaigns$campaign_id, campaigns$campaign_id)
-        }
-        if (!identical(choices, target_choices)) {
-          selected <- shiny::isolate(input$`dashboard-target-id`)
-          if (is.null(selected) || length(selected) != 1L || !selected %in% unname(choices)) {
-            selected <- if (length(choices) > 0L) unname(choices[[1L]]) else character(0)
-          }
-          shiny::updateSelectInput(session, "dashboard-target-id", choices = choices, selected = selected)
-          target_choices <<- choices
-        }
-      })
-      output$`dashboard-action-result` <- shiny::renderText({
-        if (is.null(input$`dashboard-apply`) || input$`dashboard-apply` < 1L) {
-          return("No control action submitted.")
-        }
-        "Choose a target and apply an administrator control."
-      })
-      shiny::observeEvent(input$`dashboard-apply`,
-        {
-          result <- tryCatch(
-            acquisition_control_apply(
-              catalog = catalog,
-              action = input$`dashboard-action`,
-              target_type = input$`dashboard-target-type`,
-              target_id = input$`dashboard-target-id`,
-              actor_resolver = actor_resolver,
-              request = acquisition_dashboard_request(request, session),
-              reason = input$`dashboard-reason`
-            ),
-            error = function(error) error
-          )
-          if (inherits(result, "error")) {
-            output$`dashboard-action-result` <- shiny::renderText(conditionMessage(result))
-          } else {
-            output$`dashboard-action-result` <- shiny::renderText(
-              paste0(result$action, " recorded as ", result$status, " by ", result$actor_id, ". Audit: ", result$audit_id)
-            )
-          }
-        },
-        ignoreInit = TRUE
-      )
-      if (!is.null(actor_probe)) {
-        auth_timer <- shiny::reactiveTimer(60000, session)
-        shiny::observeEvent(auth_timer(),
-          {
-            tryCatch(
-              curation_resolve_actor(actor_probe, acquisition_dashboard_request(request, session)),
-              error = function(error) if (is.function(session$close)) session$close()
-            )
-          },
-          ignoreInit = TRUE
-        )
-      }
     }
   )
 }

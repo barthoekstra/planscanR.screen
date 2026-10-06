@@ -13,6 +13,7 @@ curation_app(
   request = NULL,
   actor_probe = NULL,
   logout_path = NULL,
+  acquisition = NULL,
   historical_reviews = NULL
 )
 }
@@ -36,6 +37,10 @@ socket-expiry check. Mutation paths always use \code{actor_resolver}.}
 
 \item{logout_path}{Optional local POST path rendered as a visible Log out
 control, for example \verb{/app/logout}. It is absent by default.}
+
+\item{acquisition}{Optional injected acquisition service. A catalog can be
+supplied directly, or a list with \code{catalog}, \code{available}, and optional
+module settings. It is absent by default.}
 
 \item{historical_reviews}{Optional data frame of imported historical review
 linkage and attribution rows. Unresolved rows are shown read-only.}
