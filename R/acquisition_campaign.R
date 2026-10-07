@@ -252,12 +252,14 @@ acquisition_campaign_items_from_selection <- function(catalog, selection, thresh
     if (kind == "mixed") tags <- c("wind", "solar")
     if (kind == "unknown") tags <- character(0)
     evidence <- acquisition_campaign_column_value(selection, i, c("energy_evidence", "energy_source"))
+    title <- acquisition_campaign_column_value(selection, i, c("title", "project_title"))
     list(
       item_key = source_ids[[i]],
       source_ref_id = source_ids[[i]],
       country = as.character(source_rows$country[[i]]),
       portal = as.character(source_rows$portal[[i]]),
       native_project_id = as.character(source_rows$native_project_id[[i]]),
+      title = if (is.null(title) || length(title) == 0L || is.na(title[[1L]])) NA_character_ else as.character(title[[1L]]),
       selected = selected,
       probability = probability,
       energy_tags = unique(tags),

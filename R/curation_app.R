@@ -135,6 +135,15 @@ curation_app_normalize_historical_links <- function(rows) {
   rows
 }
 
+curation_app_unique_match_index <- function(needles, haystack) {
+  index <- match(needles, haystack)
+  duplicate <- duplicated(haystack) | duplicated(haystack, fromLast = TRUE)
+  ambiguous <- !is.na(index) & duplicate[index]
+  index[ambiguous] <- -1L
+  index[is.na(index)] <- 0L
+  as.integer(index)
+}
+
 curation_app_historical_review_rows <- function(reviews, historical_links = NULL) {
   reviews <- curation_app_normalize_reviews(reviews)
   if (!"import_row_id" %in% names(reviews)) reviews$import_row_id <- NA_character_
@@ -144,16 +153,13 @@ curation_app_historical_review_rows <- function(reviews, historical_links = NULL
   }
   review_key <- curation_app_key_string(reviews$country, reviews$document_id)
   link_key <- curation_app_key_string(historical_links$country, historical_links$document_id)
-  link_row <- vapply(seq_len(nrow(reviews)), function(i) {
-    if (!is.na(reviews$import_row_id[[i]]) && nzchar(reviews$import_row_id[[i]])) {
-      hit <- which(historical_links$import_row_id == reviews$import_row_id[[i]])
-      if (length(hit) == 1L) {
-        return(hit)
-      }
-    }
-    hit <- which(link_key == review_key[[i]])
-    if (length(hit) == 1L) hit else if (length(hit) > 1L) -1L else 0L
-  }, integer(1))
+  link_row <- curation_app_unique_match_index(review_key, link_key)
+  import_row <- curation_app_unique_match_index(
+    reviews$import_row_id,
+    historical_links$import_row_id
+  )
+  valid_import <- !is.na(reviews$import_row_id) & nzchar(reviews$import_row_id) & import_row > 0L
+  link_row[valid_import] <- import_row[valid_import]
   fields <- c(
     "original_source", "imported_source", "historical_reviewer", "historical_linkage", "current_linkage",
     "current_match_count", "linkage_status", "mutation_allowed"
@@ -174,7 +180,11 @@ curation_app_historical_review_rows <- function(reviews, historical_links = NULL
   reviews
 }
 
-curation_app_historical_record_rows <- function(records, historical_links = NULL) {
+curation_app_historical_record_rows <- function(
+  records,
+  historical_links = NULL,
+  include_badge = TRUE
+) {
   records <- as.data.frame(records, stringsAsFactors = FALSE)
   if (nrow(records) == 0L) {
     return(records)
@@ -187,10 +197,7 @@ curation_app_historical_record_rows <- function(records, historical_links = NULL
   }
   record_key <- curation_app_key_string(records$country, records$document_id)
   link_key <- curation_app_key_string(links$country, links$document_id)
-  link_row <- vapply(seq_len(nrow(records)), function(i) {
-    hit <- which(link_key == record_key[[i]])
-    if (length(hit) == 1L) hit else if (length(hit) > 1L) -1L else 0L
-  }, integer(1))
+  link_row <- curation_app_unique_match_index(record_key, link_key)
   fields <- c(
     "original_source", "imported_source", "historical_reviewer", "historical_linkage", "current_linkage",
     "current_match_count", "linkage_status", "mutation_allowed"
@@ -207,17 +214,22 @@ curation_app_historical_record_rows <- function(records, historical_links = NULL
   }
   records$historical_mutation_allowed <- as.logical(records$mutation_allowed)
   records$historical_mutation_allowed[is.na(records$historical_mutation_allowed)] <- FALSE
-  records$historical_badge <- vapply(seq_len(nrow(records)), function(i) {
-    badge <- curation_app_historical_badge(records[i, , drop = FALSE])
-    if (is.null(badge)) "" else as.character(badge)
-  }, character(1))
+  records$historical_badge <- if (isTRUE(include_badge)) {
+    vapply(seq_len(nrow(records)), function(i) {
+      badge <- curation_app_historical_badge(records[i, , drop = FALSE])
+      if (is.null(badge)) "" else as.character(badge)
+    }, character(1))
+  } else {
+    rep("", nrow(records))
+  }
   records
 }
 
 curation_app_historical_only_records <- function(
   historical_links,
   current_records = NULL,
-  reviews = NULL
+  reviews = NULL,
+  include_badge = TRUE
 ) {
   links <- curation_app_normalize_historical_links(historical_links)
   if (nrow(links) == 0L) {
@@ -280,19 +292,196 @@ curation_app_historical_only_records <- function(
       template$source[[i]] <- collapse_review_field(review_rows$source, hit)
     }
   }
-  template <- curation_app_historical_record_rows(template, selected)
+  template <- curation_app_historical_record_rows(
+    template, selected,
+    include_badge = include_badge
+  )
   template
+}
+
+# Keep the browser payload small while leaving the complete eligible result set
+# available to the server for querying.  reactable 0.4.x paginates after it has
+# received the full data frame, so the app must apply these operations before
+# constructing the widget.
+curation_app_page_spec <- function(page = 1L, page_size = 25L, max_page_size = 250L) {
+  first_value <- function(value, fallback) {
+    if (is.null(value) || length(value) == 0L) fallback else value[[1L]]
+  }
+  page <- suppressWarnings(as.integer(first_value(page, 1L)))
+  page_size <- suppressWarnings(as.integer(first_value(page_size, 25L)))
+  max_page_size <- suppressWarnings(as.integer(first_value(max_page_size, 250L)))
+  if (length(max_page_size) != 1L || is.na(max_page_size) || max_page_size < 1L) {
+    max_page_size <- 250L
+  }
+  if (length(page) != 1L || is.na(page) || page < 1L) page <- 1L
+  if (length(page_size) != 1L || is.na(page_size) || page_size < 1L) page_size <- 25L
+  list(
+    page = as.integer(page),
+    page_size = as.integer(min(page_size, max_page_size)),
+    max_page_size = as.integer(max_page_size)
+  )
+}
+
+curation_app_query_rows <- function(
+  data,
+  search = NULL,
+  filters = NULL,
+  sort_by = NULL,
+  sort_desc = FALSE
+) {
+  data <- as.data.frame(data, stringsAsFactors = FALSE)
+  if (nrow(data) == 0L) {
+    return(data)
+  }
+  keep <- rep(TRUE, nrow(data))
+  search <- if (is.null(search) || length(search) == 0L) "" else trimws(as.character(search[[1L]]))
+  if (nzchar(search)) {
+    searchable <- intersect(
+      c(
+        "title", "country", "portal", "document_id", "native_project_id",
+        "source_ref_id", "class_label", "decision", "energy_kind",
+        "priority_rule_id", "priority", "exclusion_reason", "state", "reviewer_id",
+        "historical_reviewer", "source", "note", "historical_linkage", "current_linkage",
+        "original_source", "imported_source", "historical_source"
+      ),
+      names(data)
+    )
+    if (length(searchable) > 0L) {
+      matches <- lapply(data[, searchable, drop = FALSE], function(column) {
+        grepl(tolower(search), tolower(as.character(column)), fixed = TRUE)
+      })
+      keep <- Reduce(`|`, matches)
+    } else {
+      keep[] <- FALSE
+    }
+  }
+  if (is.list(filters) && length(filters) > 0L) {
+    for (name in names(filters)) {
+      if (!name %in% names(data)) next
+      wanted <- filters[[name]]
+      if (is.null(wanted) || length(wanted) == 0L || all(is.na(wanted))) next
+      if (is.function(wanted)) {
+        match <- wanted(data[[name]])
+      } else {
+        match <- as.character(data[[name]]) %in% as.character(wanted)
+      }
+      match[is.na(match)] <- FALSE
+      keep <- keep & match
+    }
+  }
+  result <- data[keep, , drop = FALSE]
+  if (!is.null(sort_by) && length(sort_by) > 0L && as.character(sort_by[[1L]]) %in% names(result)) {
+    sort_by <- as.character(sort_by[[1L]])
+    values <- result[[sort_by]]
+    missing <- is.na(values) | !nzchar(trimws(as.character(values)))
+    present <- which(!missing)
+    if (length(present) > 1L) {
+      ordered <- present[order(values[present], seq_along(present), decreasing = isTRUE(sort_desc))]
+      result <- result[c(ordered, which(missing)), , drop = FALSE]
+    } else if (length(present) == 1L) {
+      result <- result[c(present, which(missing)), , drop = FALSE]
+    }
+  }
+  rownames(result) <- NULL
+  result
+}
+
+curation_app_page_rows <- function(data, page = 1L, page_size = 25L, max_page_size = 250L) {
+  data <- as.data.frame(data, stringsAsFactors = FALSE)
+  spec <- curation_app_page_spec(page, page_size, max_page_size)
+  total <- nrow(data)
+  page_count <- max(1L, ceiling(total / spec$page_size))
+  page <- min(spec$page, page_count)
+  start <- if (total == 0L) 1L else (page - 1L) * spec$page_size + 1L
+  end <- if (total == 0L) 0L else min(total, start + spec$page_size - 1L)
+  rows <- if (total == 0L || start > total) data[0, , drop = FALSE] else data[start:end, , drop = FALSE]
+  attr(rows, "total_count") <- as.integer(total)
+  attr(rows, "page") <- as.integer(page)
+  attr(rows, "page_size") <- as.integer(spec$page_size)
+  attr(rows, "page_count") <- as.integer(page_count)
+  rows
+}
+
+curation_app_compact_display <- function(data, blind = FALSE) {
+  data <- as.data.frame(data, stringsAsFactors = FALSE)
+  if (nrow(data) == 0L) {
+    return(data)
+  }
+  if (!"title" %in% names(data)) data$title <- NA_character_
+  title <- as.character(data$title)
+  title[is.na(title) | !nzchar(trimws(title))] <- "(no title)"
+  data$title <- title
+  if (!"historical_badge" %in% names(data)) {
+    data$historical_badge <- vapply(seq_len(nrow(data)), function(i) {
+      badge <- curation_app_historical_badge(data[i, , drop = FALSE])
+      if (is.null(badge)) "" else as.character(badge)
+    }, character(1))
+  }
+  visible <- c(
+    "decision", "country", "portal", "native_project_id", "source_ref_id", "document_id", "title",
+    "cosine_max", "class_label", "class_score", "kw_total", "selected", "selected_model",
+    "n_attachments", "has_attachments", "n_downloaded", "has_downloaded",
+    "historical_mutation_allowed", "historical_badge", "review_revision"
+  )
+  if (isTRUE(blind)) {
+    visible <- setdiff(visible, c("cosine_max", "class_label", "class_score", "kw_total", "selected", "selected_model"))
+  }
+  present <- intersect(visible, names(data))
+  data[, present, drop = FALSE]
+}
+
+curation_app_record_from_identity <- function(data, country, document_id, portal = NULL, source_ref_id = NULL) {
+  data <- as.data.frame(data, stringsAsFactors = FALSE)
+  if (nrow(data) == 0L || !all(c("country", "document_id") %in% names(data))) {
+    return(NULL)
+  }
+  hit <- as.character(data$country) == as.character(country) &
+    as.character(data$document_id) == as.character(document_id)
+  if (!is.null(source_ref_id) && "source_ref_id" %in% names(data) && nzchar(as.character(source_ref_id))) {
+    hit <- hit & as.character(data$source_ref_id) == as.character(source_ref_id)
+  } else if (!is.null(portal) && "portal" %in% names(data) && nzchar(as.character(portal))) {
+    hit <- hit & as.character(data$portal) == as.character(portal)
+  }
+  indices <- which(hit)
+  if (length(indices) != 1L) {
+    return(NULL)
+  }
+  data[indices, , drop = FALSE]
+}
+
+curation_app_detail_on_click <- function(input_id = "review_detail") {
+  reactable::JS(sprintf(
+    "function(rowInfo, column, state) {\n      if (!window.Shiny || !rowInfo || !rowInfo.values) return;\n      var values = rowInfo.values;\n      if (column && column.id === '.selection') return;\n      window.Shiny.setInputValue('%s', {country:values.country, document_id:values.document_id, portal:values.portal || null, source_ref_id:values.source_ref_id || null, nonce:Date.now() + Math.random()}, {priority:'event'});\n    }",
+    input_id
+  ))
 }
 
 curation_app_historical_only_table <- function(
   historical_links,
   current_records = NULL,
-  reviews = NULL
+  reviews = NULL,
+  page = 1L,
+  page_size = 25L,
+  search = NULL,
+  sort_by = NULL,
+  sort_desc = FALSE
 ) {
-  rows <- curation_app_historical_only_records(historical_links, current_records, reviews)
+  rows <- curation_app_historical_only_records(
+    historical_links, current_records, reviews,
+    include_badge = FALSE
+  )
   if (nrow(rows) == 0L) {
     return(reactable::reactable(data.frame(Note = "No historical-only labels are available."), pagination = FALSE))
   }
+  rows <- curation_app_query_rows(rows, search = search, sort_by = sort_by, sort_desc = sort_desc)
+  rows <- curation_app_page_rows(rows, page = page, page_size = page_size)
+  if (nrow(rows) == 0L) {
+    return(reactable::reactable(data.frame(Note = "No historical-only labels match this view."), pagination = FALSE))
+  }
+  rows$historical_badge <- vapply(seq_len(nrow(rows)), function(i) {
+    badge <- curation_app_historical_badge(rows[i, , drop = FALSE])
+    if (is.null(badge)) "" else as.character(badge)
+  }, character(1))
   shown <- rows[, intersect(
     c(
       "country", "document_id", "historical_badge", "historical_reviewer",
@@ -317,12 +506,14 @@ curation_app_historical_only_table <- function(
   reactable::reactable(
     shown,
     columns = columns[intersect(names(columns), names(shown))],
-    searchable = TRUE,
-    filterable = TRUE,
+    searchable = FALSE,
+    filterable = FALSE,
     pagination = TRUE,
-    defaultPageSize = 25,
+    defaultPageSize = attr(rows, "page_size") %||% 25L,
+    showPageSizeOptions = FALSE,
     compact = TRUE,
-    highlight = TRUE
+    highlight = TRUE,
+    defaultColDef = reactable::colDef(sortable = FALSE)
   )
 }
 
@@ -937,7 +1128,15 @@ curation_app_admin_decision_cell <- function() {
   )
 }
 
-curation_app_admin_table <- function(rows, historical_links = NULL) {
+curation_app_admin_table <- function(
+  rows,
+  historical_links = NULL,
+  page = 1L,
+  page_size = 25L,
+  search = NULL,
+  sort_by = NULL,
+  sort_desc = FALSE
+) {
   rows <- curation_app_active_reviews(rows)
   if (nrow(rows) == 0L) {
     return(reactable::reactable(data.frame(Note = "No active reviews are available."), pagination = FALSE))
@@ -949,6 +1148,8 @@ curation_app_admin_table <- function(rows, historical_links = NULL) {
     badge <- curation_app_historical_badge(rows[i, , drop = FALSE])
     if (is.null(badge)) "" else as.character(badge)
   }, character(1))
+  rows <- curation_app_query_rows(rows, search = search, sort_by = sort_by, sort_desc = sort_desc)
+  rows <- curation_app_page_rows(rows, page = page, page_size = page_size)
   columns <- list(
     decision = reactable::colDef(
       name = "Review", sticky = "left", width = 160, sortable = FALSE,
@@ -961,41 +1162,84 @@ curation_app_admin_table <- function(rows, historical_links = NULL) {
     revision = reactable::colDef(name = "Revision", width = 90, align = "center"),
     historical_badge = reactable::colDef(name = "Attribution / linkage", width = 300, html = TRUE)
   )
-  show <- c("decision", "country", "document_id", "reviewer_id", "source", "revision", "historical_badge")
-  for (name in setdiff(names(rows), show)) columns[[name]] <- reactable::colDef(show = FALSE)
+  show <- c(
+    "decision", "country", "document_id", "reviewer_id", "source", "revision",
+    "historical_badge", "historical_mutation_allowed"
+  )
+  show <- intersect(show, names(rows))
   reactable::reactable(
-    rows[, unique(c(show, setdiff(names(rows), show))), drop = FALSE],
+    rows[, show, drop = FALSE],
     columns = columns,
-    searchable = TRUE,
-    filterable = TRUE,
+    searchable = FALSE,
+    filterable = FALSE,
     resizable = TRUE,
     pagination = TRUE,
-    defaultPageSize = 25,
+    defaultPageSize = attr(rows, "page_size") %||% 25L,
+    showPageSizeOptions = FALSE,
     compact = TRUE,
     highlight = TRUE,
-    defaultColDef = reactable::colDef(headerStyle = list(whiteSpace = "normal"))
+    defaultColDef = reactable::colDef(
+      sortable = FALSE,
+      headerStyle = list(whiteSpace = "normal")
+    )
   )
 }
 
-curation_app_table <- function(data, reviews, config, source = "browse", blind = FALSE, reviewer_id, render_id = NULL, historical_links = NULL) {
+curation_app_prepare_display_data <- function(data, reviews, reviewer_id, historical_links = NULL) {
+  data <- as.data.frame(data, stringsAsFactors = FALSE)
+  data <- curation_app_historical_record_rows(
+    data, historical_links,
+    include_badge = FALSE
+  )
+  all_reviews <- curation_app_normalize_reviews(reviews)
+  active <- curation_app_active_reviews(all_reviews)
+  target <- active[active$reviewer_id == reviewer_id, , drop = FALSE]
+  lookup <- stats::setNames(
+    target$decision,
+    curation_app_key_string(target$country, target$document_id, reviewer_id)
+  )
+  data$decision <- unname(lookup[curation_app_key_string(data$country, data$document_id, reviewer_id)])
+  curation_app_attach_review_revisions(data, all_reviews, reviewer_id)
+}
+
+curation_app_table <- function(
+  data,
+  reviews,
+  config,
+  source = "browse",
+  blind = FALSE,
+  reviewer_id,
+  render_id = NULL,
+  historical_links = NULL,
+  page = 1L,
+  page_size = 25L,
+  max_page_size = 250L,
+  search = NULL,
+  sort_by = NULL,
+  sort_desc = FALSE,
+  detail_input_id = "review_detail"
+) {
   data <- as.data.frame(data, stringsAsFactors = FALSE)
   if (nrow(data) == 0L) {
     return(reactable::reactable(data.frame(Note = "No records match this view."), pagination = FALSE))
   }
-  data <- curation_app_historical_record_rows(data, historical_links)
-  all_reviews <- curation_app_normalize_reviews(reviews)
-  reviews <- curation_app_active_reviews(all_reviews)
-  lookup <- stats::setNames(
-    reviews$decision[reviews$reviewer_id == reviewer_id],
-    curation_app_key_string(
-      reviews$country[reviews$reviewer_id == reviewer_id],
-      reviews$document_id[reviews$reviewer_id == reviewer_id],
-      reviewer_id
-    )
-  )
-  data$decision <- unname(lookup[curation_app_key_string(data$country, data$document_id, reviewer_id)])
-  data <- curation_app_attach_review_revisions(data, all_reviews, reviewer_id)
+  data <- curation_app_prepare_display_data(data, reviews, reviewer_id, historical_links)
   has_model <- "select_prob" %in% names(data) && any(!is.na(data$select_prob))
+  data <- curation_app_query_rows(
+    data,
+    search = search,
+    sort_by = sort_by,
+    sort_desc = sort_desc
+  )
+  data <- curation_app_page_rows(
+    data,
+    page = page, page_size = page_size, max_page_size = max_page_size
+  )
+  data$historical_badge <- vapply(seq_len(nrow(data)), function(i) {
+    badge <- curation_app_historical_badge(data[i, , drop = FALSE])
+    if (is.null(badge)) "" else as.character(badge)
+  }, character(1))
+  data <- curation_app_compact_display(data, blind = blind)
   trunc_cell <- function(value) {
     htmltools::div(
       title = if (is.na(value)) "" else as.character(value),
@@ -1009,6 +1253,9 @@ curation_app_table <- function(data, reviews, config, source = "browse", blind =
       filterable = FALSE, html = TRUE, cell = curation_app_decision_cell(source, reviewer_id, render_id)
     ),
     country = reactable::colDef(name = "Country", width = 90, align = "center"),
+    portal = reactable::colDef(name = "Portal", width = 140),
+    source_ref_id = reactable::colDef(name = "Source", width = 150),
+    native_project_id = reactable::colDef(name = "Portal project", width = 150),
     document_id = reactable::colDef(name = "Document", width = 130),
     title = reactable::colDef(name = "Title", minWidth = 220, cell = trunc_cell),
     cosine_max = reactable::colDef(name = "Topic match", width = 120, format = reactable::colFormat(digits = 3)),
@@ -1034,17 +1281,19 @@ curation_app_table <- function(data, reviews, config, source = "browse", blind =
     data,
     columns = cols,
     selection = "multiple",
-    onClick = "expand",
-    details = function(index) curation_app_record_detail(data[index, , drop = FALSE], config),
-    searchable = TRUE,
-    filterable = TRUE,
+    onClick = curation_app_detail_on_click(detail_input_id),
+    searchable = FALSE,
+    filterable = FALSE,
     resizable = TRUE,
-    defaultPageSize = 25,
-    showPageSizeOptions = TRUE,
-    pageSizeOptions = c(25, 50, 100, 250),
+    pagination = FALSE,
+    defaultPageSize = attr(data, "page_size") %||% 25L,
+    showPageSizeOptions = FALSE,
     compact = TRUE,
     highlight = TRUE,
-    defaultColDef = reactable::colDef(headerStyle = list(whiteSpace = "normal"))
+    defaultColDef = reactable::colDef(
+      sortable = FALSE,
+      headerStyle = list(whiteSpace = "normal")
+    )
   )
 }
 
@@ -1204,6 +1453,9 @@ curation_app_ui <- function(config, logout_path = NULL, acquisition = NULL) {
         "font-size:11px;padding:2px 7px;cursor:pointer;line-height:1.5;}",
         ".curation-decision.active{background:var(--curation-color);color:#fff;}",
         ".curation-decision-group{display:flex;gap:3px;}",
+        ".curation-table-controls{display:flex;align-items:flex-end;flex-wrap:wrap;gap:8px;margin:6px 0 10px;}",
+        ".curation-table-controls .form-group{margin:0;}",
+        ".curation-table-controls .checkbox{margin:0 0 7px;}",
         ".curation-stat{font-variant-numeric:tabular-nums;font-size:1.35rem;font-weight:600;}",
         ".curation-comparison{width:100%;border-collapse:collapse;}",
         ".curation-comparison td,.curation-comparison th{padding:7px;border-bottom:1px solid #eee;}"
@@ -1446,15 +1698,43 @@ curation_app_ui <- function(config, logout_path = NULL, acquisition = NULL) {
           shiny$actionButton("mark_clear", "Clear", class = "btn-outline-secondary btn-sm"),
           shiny$textOutput("review_info", inline = TRUE)
         ),
+        htmltools::div(
+          class = "curation-table-controls",
+          shiny$textInput("review_search", "Search all eligible records", value = "", width = "260px"),
+          shiny$selectInput(
+            "review_sort", "Sort by",
+            choices = c("Default relevance" = "", "Title" = "title", "Country" = "country", "Portal" = "portal", "Document" = "document_id", "Topic match" = "cosine_max"),
+            selected = ""
+          ),
+          shiny$checkboxInput("review_sort_desc", "Descending", FALSE),
+          shiny$selectInput("review_page_size", "Rows per page", choices = c(25, 50, 100, 250), selected = 25),
+          shiny$numericInput("review_page", "Page", value = 1L, min = 1L, step = 1L),
+          shiny$actionButton("review_page_prev", "Previous page", class = "btn-outline-secondary btn-sm"),
+          shiny$actionButton("review_page_next", "Next page", class = "btn-outline-secondary btn-sm"),
+          shiny$textOutput("review_page_info", inline = TRUE)
+        ),
         shiny$helpText("Select rows for bulk actions. Click a row to expand the original and optional translated text."),
-        reactable::reactableOutput("review_tbl"),
-        min_height = "520px",
+        reactable::reactableOutput("review_tbl", height = "420px"),
+        shiny$uiOutput("review_detail"),
+        fill = FALSE,
         class = "curation-review-card"
       ),
       bslib$card(
         bslib$card_header("Historical imported labels"),
         shiny$helpText("Historical labels retain source and linkage attribution. Unresolved rows are read-only."),
-        reactable::reactableOutput("historical_review_tbl")
+        htmltools::div(
+          class = "curation-table-controls",
+          shiny$textInput("historical_search", "Search historical labels", value = "", width = "260px"),
+          shiny$selectInput("historical_sort", "Sort by", choices = c("Document" = "document_id", "Country" = "country", "Reviewer" = "historical_reviewer"), selected = "document_id"),
+          shiny$checkboxInput("historical_sort_desc", "Descending", FALSE),
+          shiny$selectInput("historical_page_size", "Rows per page", choices = c(25, 50, 100, 250), selected = 25),
+          shiny$numericInput("historical_page", "Page", value = 1L, min = 1L, step = 1L),
+          shiny$actionButton("historical_page_prev", "Previous page", class = "btn-outline-secondary btn-sm"),
+          shiny$actionButton("historical_page_next", "Next page", class = "btn-outline-secondary btn-sm"),
+          shiny$textOutput("historical_page_info", inline = TRUE)
+        ),
+        reactable::reactableOutput("historical_review_tbl", height = "420px"),
+        fill = FALSE
       ),
       shiny$uiOutput("admin_review_ui")
     ),
@@ -1481,7 +1761,23 @@ curation_app_ui <- function(config, logout_path = NULL, acquisition = NULL) {
             shiny$actionButton("rnd_unsure", "Unsure", class = "btn-warning btn-sm"),
             shiny$actionButton("rnd_clear", "Clear", class = "btn-outline-secondary btn-sm")
           ),
-          reactable::reactableOutput("random_tbl")
+          htmltools::div(
+            class = "curation-table-controls",
+            shiny$textInput("random_search", "Search random queue", value = "", width = "260px"),
+            shiny$selectInput(
+              "random_sort", "Sort by",
+              choices = c("Queue order" = "", "Title" = "title", "Country" = "country", "Portal" = "portal", "Document" = "document_id"),
+              selected = ""
+            ),
+            shiny$checkboxInput("random_sort_desc", "Descending", FALSE),
+            shiny$selectInput("random_page_size", "Rows per page", choices = c(25, 50, 100, 250), selected = 25),
+            shiny$numericInput("random_page", "Page", value = 1L, min = 1L, step = 1L),
+            shiny$actionButton("random_page_prev", "Previous page", class = "btn-outline-secondary btn-sm"),
+            shiny$actionButton("random_page_next", "Next page", class = "btn-outline-secondary btn-sm"),
+            shiny$textOutput("random_page_info", inline = TRUE)
+          ),
+          reactable::reactableOutput("random_tbl", height = "420px"),
+          shiny$uiOutput("random_detail")
         ),
         shiny$conditionalPanel(
           "input.rnd_view == 'single'",
@@ -1493,7 +1789,8 @@ curation_app_ui <- function(config, logout_path = NULL, acquisition = NULL) {
           ),
           shiny$uiOutput("sr_record"),
           shiny$uiOutput("sr_decision")
-        )
+        ),
+        fill = FALSE
       )
     ),
     curation_app_acquisition_nav(acquisition)
@@ -2215,6 +2512,51 @@ curation_app_server <- function(input, output, session, context) {
     result <- data[match(wanted, key), , drop = FALSE]
     result[!is.na(result$document_id), , drop = FALSE]
   })
+  random_page <- shiny::reactiveVal(1L)
+  random_page_size <- shiny::reactive({
+    curation_app_page_spec(page_size = input$random_page_size)$page_size
+  })
+  random_query <- shiny::reactive({
+    data <- curation_app_prepare_display_data(
+      random_df(), reviews(), reviewer_id, historical_links
+    )
+    curation_app_query_rows(
+      data,
+      search = input$random_search,
+      sort_by = input$random_sort,
+      sort_desc = isTRUE(input$random_sort_desc)
+    )
+  })
+  random_page_data <- shiny::reactive({
+    curation_app_page_rows(
+      random_query(),
+      page = random_page(), page_size = random_page_size()
+    )
+  })
+  set_random_page <- function(value) {
+    value <- max(1L, suppressWarnings(as.integer(value[[1L]] %||% 1L)))
+    random_page(value)
+    shiny::updateNumericInput(session, "random_page", value = value)
+  }
+  shiny::observeEvent(
+    list(input$random_search, input$random_sort, input$random_sort_desc, input$random_page_size),
+    set_random_page(1L),
+    ignoreInit = TRUE
+  )
+  shiny::observeEvent(random_df(), set_random_page(1L), ignoreInit = TRUE)
+  shiny::observeEvent(input$random_page, set_random_page(input$random_page), ignoreInit = TRUE)
+  shiny::observeEvent(input$random_page_prev, set_random_page(random_page() - 1L), ignoreInit = TRUE)
+  shiny::observeEvent(input$random_page_next,
+    {
+      page_data <- random_page_data()
+      set_random_page(min(attr(page_data, "page") + 1L, attr(page_data, "page_count")))
+    },
+    ignoreInit = TRUE
+  )
+  output$random_page_info <- shiny::renderText({
+    rows <- random_page_data()
+    sprintf("Page %d of %d (%d rows)", attr(rows, "page"), attr(rows, "page_count"), attr(rows, "total_count"))
+  })
 
   output$actor_info <- shiny::renderUI({
     shiny::tagList(
@@ -2453,16 +2795,79 @@ curation_app_server <- function(input, output, session, context) {
       shiny::helpText(
         "Administrators can edit an existing review for any target reviewer. The authenticated administrator remains the actor; the target reviewer is shown per row."
       ),
+      htmltools::div(
+        class = "curation-table-controls",
+        shiny::textInput("admin_search", "Search reviews", value = "", width = "260px"),
+        shiny::selectInput(
+          "admin_sort", "Sort by",
+          choices = c("Document" = "document_id", "Country" = "country", "Reviewer" = "reviewer_id"),
+          selected = "document_id"
+        ),
+        shiny::checkboxInput("admin_sort_desc", "Descending", FALSE),
+        shiny::selectInput("admin_page_size", "Rows per page", choices = c(25, 50, 100, 250), selected = 25),
+        shiny::numericInput("admin_page", "Page", value = 1L, min = 1L, step = 1L),
+        shiny::actionButton("admin_page_prev", "Previous page", class = "btn-outline-secondary btn-sm"),
+        shiny::actionButton("admin_page_next", "Next page", class = "btn-outline-secondary btn-sm"),
+        shiny::textOutput("admin_page_info", inline = TRUE)
+      ),
       reactable::reactableOutput("admin_review_tbl", height = "420px"),
+      fill = FALSE,
       max_height = "560px",
       class = "curation-admin-card"
     )
+  })
+  admin_page <- shiny::reactiveVal(1L)
+  admin_page_size <- shiny::reactive({
+    curation_app_page_spec(page_size = input$admin_page_size)$page_size
+  })
+  admin_query <- shiny::reactive({
+    rows <- curation_app_historical_review_rows(
+      curation_app_active_reviews(reviews()), historical_links
+    )
+    curation_app_query_rows(
+      rows,
+      search = input$admin_search,
+      sort_by = input$admin_sort,
+      sort_desc = isTRUE(input$admin_sort_desc)
+    )
+  })
+  admin_page_data <- shiny::reactive({
+    curation_app_page_rows(admin_query(), page = admin_page(), page_size = admin_page_size())
+  })
+  set_admin_page <- function(value) {
+    value <- max(1L, suppressWarnings(as.integer(value[[1L]] %||% 1L)))
+    admin_page(value)
+    shiny::updateNumericInput(session, "admin_page", value = value)
+  }
+  shiny::observeEvent(
+    list(input$admin_search, input$admin_sort, input$admin_sort_desc, input$admin_page_size),
+    set_admin_page(1L),
+    ignoreInit = TRUE
+  )
+  shiny::observeEvent(input$admin_page, set_admin_page(input$admin_page), ignoreInit = TRUE)
+  shiny::observeEvent(input$admin_page_prev, set_admin_page(admin_page() - 1L), ignoreInit = TRUE)
+  shiny::observeEvent(input$admin_page_next,
+    {
+      page_data <- admin_page_data()
+      set_admin_page(min(attr(page_data, "page") + 1L, attr(page_data, "page_count")))
+    },
+    ignoreInit = TRUE
+  )
+  output$admin_page_info <- shiny::renderText({
+    rows <- admin_page_data()
+    sprintf("Page %d of %d (%d reviews)", attr(rows, "page"), attr(rows, "page_count"), attr(rows, "total_count"))
   })
   output$admin_review_tbl <- reactable::renderReactable({
     if (!isTRUE(initial_admin)) {
       return(reactable::reactable(data.frame(Note = "Administrator access is required."), pagination = FALSE))
     }
-    curation_app_admin_table(reviews(), historical_links = historical_links)
+    curation_app_admin_table(
+      reviews(),
+      historical_links = historical_links,
+      page = admin_page(), page_size = admin_page_size(),
+      search = input$admin_search, sort_by = input$admin_sort,
+      sort_desc = isTRUE(input$admin_sort_desc)
+    )
   })
   current_reviewed_keys <- shiny::reactive({
     rv <- active_reviews()
@@ -2725,8 +3130,54 @@ curation_app_server <- function(input, output, session, context) {
   output$historical_overview_tbl <- reactable::renderReactable({
     curation_app_historical_only_table(
       historical_links,
-      current_records = records(), reviews = reviews()
+      current_records = records(), reviews = reviews(), page = 1L, page_size = 25L
     )
+  })
+
+  historical_page <- shiny::reactiveVal(1L)
+  historical_page_size <- shiny::reactive({
+    curation_app_page_spec(page_size = input$historical_page_size)$page_size
+  })
+  historical_query <- shiny::reactive({
+    rows <- curation_app_historical_only_records(
+      historical_links, records(), reviews(),
+      include_badge = FALSE
+    )
+    curation_app_query_rows(
+      rows,
+      search = input$historical_search,
+      sort_by = input$historical_sort,
+      sort_desc = isTRUE(input$historical_sort_desc)
+    )
+  })
+  historical_page_data <- shiny::reactive({
+    curation_app_page_rows(
+      historical_query(),
+      page = historical_page(), page_size = historical_page_size()
+    )
+  })
+  set_historical_page <- function(value) {
+    value <- max(1L, suppressWarnings(as.integer(value[[1L]] %||% 1L)))
+    historical_page(value)
+    shiny::updateNumericInput(session, "historical_page", value = value)
+  }
+  shiny::observeEvent(
+    list(input$historical_search, input$historical_sort, input$historical_sort_desc, input$historical_page_size),
+    set_historical_page(1L),
+    ignoreInit = TRUE
+  )
+  shiny::observeEvent(input$historical_page, set_historical_page(input$historical_page), ignoreInit = TRUE)
+  shiny::observeEvent(input$historical_page_prev, set_historical_page(historical_page() - 1L), ignoreInit = TRUE)
+  shiny::observeEvent(input$historical_page_next,
+    {
+      page_data <- historical_page_data()
+      set_historical_page(min(attr(page_data, "page") + 1L, attr(page_data, "page_count")))
+    },
+    ignoreInit = TRUE
+  )
+  output$historical_page_info <- shiny::renderText({
+    rows <- historical_page_data()
+    sprintf("Page %d of %d (%d labels)", attr(rows, "page"), attr(rows, "page_count"), attr(rows, "total_count"))
   })
 
   display_df <- shiny::reactive({
@@ -2760,22 +3211,54 @@ curation_app_server <- function(input, output, session, context) {
     cosine[is.na(cosine)] <- -1
     data[order(-(data$selected %in% TRUE), -cosine), , drop = FALSE]
   })
-  display_capped <- shiny::reactive({
-    data <- display_df()
-    if (nrow(data) > 5000L) {
-      attr(data, "truncated") <- nrow(data)
-      data <- data[seq_len(5000L), , drop = FALSE]
-    }
-    data
+  review_page <- shiny::reactiveVal(1L)
+  review_page_size <- shiny::reactive({
+    curation_app_page_spec(page_size = input$review_page_size)$page_size
+  })
+  review_query <- shiny::reactive({
+    data <- curation_app_prepare_display_data(
+      display_df(), reviews(), reviewer_id, historical_links
+    )
+    curation_app_query_rows(
+      data,
+      search = input$review_search,
+      sort_by = input$review_sort,
+      sort_desc = isTRUE(input$review_sort_desc)
+    )
+  })
+  display_page <- shiny::reactive({
+    curation_app_page_rows(review_query(), page = review_page(), page_size = review_page_size())
+  })
+  set_review_page <- function(value) {
+    value <- max(1L, suppressWarnings(as.integer(value[[1L]] %||% 1L)))
+    review_page(value)
+    shiny::updateNumericInput(session, "review_page", value = value)
+  }
+  shiny::observeEvent(
+    list(input$stage_filter, input$review_search, input$review_sort, input$review_sort_desc, input$review_page_size),
+    set_review_page(1L),
+    ignoreInit = TRUE
+  )
+  shiny::observeEvent(countries_debounced(), set_review_page(1L), ignoreInit = TRUE)
+  shiny::observeEvent(input$review_page, set_review_page(input$review_page), ignoreInit = TRUE)
+  shiny::observeEvent(input$review_page_prev, set_review_page(review_page() - 1L), ignoreInit = TRUE)
+  shiny::observeEvent(input$review_page_next,
+    {
+      page_data <- display_page()
+      set_review_page(min(attr(page_data, "page") + 1L, attr(page_data, "page_count")))
+    },
+    ignoreInit = TRUE
+  )
+  output$review_page_info <- shiny::renderText({
+    rows <- display_page()
+    sprintf("Page %d of %d (%d rows)", attr(rows, "page"), attr(rows, "page_count"), attr(rows, "total_count"))
   })
   output$review_info <- shiny::renderText({
-    data <- display_capped()
-    total <- attr(data, "truncated")
-    if (is.null(total)) sprintf("%d rows", nrow(data)) else sprintf("showing %d of %d (capped)", nrow(data), total)
+    sprintf("%d rows", attr(display_page(), "total_count"))
   })
   output$review_tbl <- reactable::renderReactable({
-    data <- display_capped()
-    display_rows <- curation_app_review_display_rows(data, reviews(), reviewer_id)
+    data <- display_df()
+    display_rows <- curation_app_review_display_rows(display_page(), reviews(), reviewer_id)
     render_id <- curation_artifact_content_fingerprint(display_rows)
     review_display_tokens$review_tbl <- render_id
     session$sendCustomMessage(
@@ -2789,13 +3272,33 @@ curation_app_server <- function(input, output, session, context) {
     curation_app_table(
       data, reviews(), config,
       source = "browse", reviewer_id = reviewer_id,
-      render_id = render_id, historical_links = historical_links
+      render_id = render_id, historical_links = historical_links,
+      page = review_page(), page_size = review_page_size(),
+      search = input$review_search, sort_by = input$review_sort,
+      sort_desc = isTRUE(input$review_sort_desc)
     )
+  })
+  output$review_detail <- shiny::renderUI({
+    info <- input$review_detail
+    if (!is.list(info) || is.null(info$country) || is.null(info$document_id)) {
+      return(shiny::helpText("Select a row to load its original and optional translated text."))
+    }
+    row <- curation_app_record_from_identity(
+      display_df(), info$country, info$document_id,
+      portal = info$portal, source_ref_id = info$source_ref_id
+    )
+    if (is.null(row)) {
+      return(shiny::helpText("The selected record is no longer available in this view."))
+    }
+    curation_app_record_detail(row, config)
   })
   output$historical_review_tbl <- reactable::renderReactable({
     curation_app_historical_only_table(
       historical_links,
-      current_records = records(), reviews = reviews()
+      current_records = records(), reviews = reviews(),
+      page = historical_page(), page_size = historical_page_size(),
+      search = input$historical_search, sort_by = input$historical_sort,
+      sort_desc = isTRUE(input$historical_sort_desc)
     )
   })
 
@@ -3161,10 +3664,10 @@ curation_app_server <- function(input, output, session, context) {
     shiny::showNotification(sprintf("%d record(s) updated.", length(index)), type = "message")
     invisible(NULL)
   }
-  shiny::observeEvent(input$mark_keep, apply_bulk("keep", "review_tbl", display_capped(), "browse"))
-  shiny::observeEvent(input$mark_drop, apply_bulk("drop", "review_tbl", display_capped(), "browse"))
-  shiny::observeEvent(input$mark_unsure, apply_bulk("unsure", "review_tbl", display_capped(), "browse"))
-  shiny::observeEvent(input$mark_clear, apply_bulk(NULL, "review_tbl", display_capped(), "browse"))
+  shiny::observeEvent(input$mark_keep, apply_bulk("keep", "review_tbl", display_page(), "browse"))
+  shiny::observeEvent(input$mark_drop, apply_bulk("drop", "review_tbl", display_page(), "browse"))
+  shiny::observeEvent(input$mark_unsure, apply_bulk("unsure", "review_tbl", display_page(), "browse"))
+  shiny::observeEvent(input$mark_clear, apply_bulk(NULL, "review_tbl", display_page(), "browse"))
 
   output$agreement_ui <- shiny::renderUI({
     agreement <- tryCatch(curation_inter_reviewer_summary(reviews(), config), error = function(e) NULL)
@@ -3216,7 +3719,7 @@ curation_app_server <- function(input, output, session, context) {
 
   output$random_tbl <- reactable::renderReactable({
     data <- random_df()
-    display_rows <- curation_app_review_display_rows(data, reviews(), reviewer_id)
+    display_rows <- curation_app_review_display_rows(random_page_data(), reviews(), reviewer_id)
     render_id <- curation_artifact_content_fingerprint(display_rows)
     review_display_tokens$random_tbl <- render_id
     session$sendCustomMessage(
@@ -3230,8 +3733,25 @@ curation_app_server <- function(input, output, session, context) {
     curation_app_table(
       data, reviews(), config,
       source = "random", blind = isTRUE(input$rnd_blind),
-      reviewer_id = reviewer_id, render_id = render_id, historical_links = historical_links
+      reviewer_id = reviewer_id, render_id = render_id, historical_links = historical_links,
+      page = random_page(), page_size = random_page_size(), max_page_size = 250L,
+      search = input$random_search, sort_by = input$random_sort,
+      sort_desc = isTRUE(input$random_sort_desc), detail_input_id = "random_detail"
     )
+  })
+  output$random_detail <- shiny::renderUI({
+    info <- input$random_detail
+    if (!is.list(info) || is.null(info$country) || is.null(info$document_id)) {
+      return(shiny::helpText("Select a row to load its original and optional translated text."))
+    }
+    row <- curation_app_record_from_identity(
+      random_df(), info$country, info$document_id,
+      portal = info$portal, source_ref_id = info$source_ref_id
+    )
+    if (is.null(row)) {
+      return(shiny::helpText("The selected random record is no longer available."))
+    }
+    curation_app_record_detail(row, config)
   })
   output$warm_status <- shiny::renderUI({
     if (is.null(config$translator)) shiny::helpText("Translation provider disabled.") else shiny::helpText("Translations are supplied by the injected provider.")
@@ -3304,10 +3824,10 @@ curation_app_server <- function(input, output, session, context) {
       shiny::showNotification(sprintf("Queued %d records (%s).", nrow(queue), attr(queue, "mode") %||% "empty"), type = "message")
     }
   })
-  shiny::observeEvent(input$rnd_keep, apply_bulk("keep", "random_tbl", random_df(), "random"))
-  shiny::observeEvent(input$rnd_drop, apply_bulk("drop", "random_tbl", random_df(), "random"))
-  shiny::observeEvent(input$rnd_unsure, apply_bulk("unsure", "random_tbl", random_df(), "random"))
-  shiny::observeEvent(input$rnd_clear, apply_bulk(NULL, "random_tbl", random_df(), "random"))
+  shiny::observeEvent(input$rnd_keep, apply_bulk("keep", "random_tbl", random_page_data(), "random"))
+  shiny::observeEvent(input$rnd_drop, apply_bulk("drop", "random_tbl", random_page_data(), "random"))
+  shiny::observeEvent(input$rnd_unsure, apply_bulk("unsure", "random_tbl", random_page_data(), "random"))
+  shiny::observeEvent(input$rnd_clear, apply_bulk(NULL, "random_tbl", random_page_data(), "random"))
 
   sr_current <- shiny::reactive({
     data <- random_df()
