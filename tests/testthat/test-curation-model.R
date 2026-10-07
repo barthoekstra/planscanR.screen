@@ -107,6 +107,54 @@ test_that("curation model adapter passes config and random source to existing tr
   expect_identical(after$selected_model, before$selected_model)
 })
 
+test_that("curation prediction leaves unscored rows unpredicted", {
+  for (pkg in c("parsnip", "recipes", "rsample", "workflows")) {
+    skip_if_not_installed(pkg)
+  }
+  config <- curation_model_test_config()
+  records <- curation_model_test_records()
+  model <- curation_train_model(
+    records,
+    curation_model_test_reviews(records),
+    config,
+    eval_source = "random",
+    v = 3L,
+    seed = 42L
+  )
+  numeric_features <- model$features[grepl(
+    "^(relevance_score_|class_score_)|^kw_total$",
+    model$features
+  )]
+  valid <- records[1:2, , drop = FALSE]
+  expected <- predict_selection(model, valid, threshold = 0.75)
+
+  mixed <- records[1:3, , drop = FALSE]
+  for (feature in numeric_features) mixed[[feature]][[3L]] <- NA_real_
+  mixed[[numeric_features[[1L]]]][[3L]] <- Inf
+  served <- curation_predict_model(model, mixed, config = config, threshold = 0.75)
+  expect_equal(served$select_prob[1:2], expected$select_prob, tolerance = 1e-12)
+  expect_identical(served$selected_model[1:2], expected$selected_model)
+  expect_true(is.na(served$select_prob[[3L]]))
+  expect_false(served$selected_model[[3L]])
+
+  missing <- valid[, setdiff(names(valid), numeric_features[[1L]]), drop = FALSE]
+  missing_result <- curation_predict_model(model, missing, config = config)
+  expect_true(all(is.na(missing_result$select_prob)))
+  expect_false(any(missing_result$selected_model))
+
+  all_unscored <- valid
+  for (feature in numeric_features) all_unscored[[feature]] <- NA_real_
+  all_unscored_result <- curation_predict_model(model, all_unscored, config = config)
+  expect_true(all(is.na(all_unscored_result$select_prob)))
+  expect_false(any(all_unscored_result$selected_model))
+
+  empty_result <- curation_predict_model(model, valid[0, , drop = FALSE], config = config)
+  expect_type(empty_result$select_prob, "double")
+  expect_type(empty_result$selected_model, "logical")
+  expect_length(empty_result$select_prob, 0L)
+  expect_length(empty_result$selected_model, 0L)
+})
+
 test_that("curation evaluation preserves consensus and random-only metrics", {
   config <- curation_model_test_config()
   records <- curation_model_test_records(6L)

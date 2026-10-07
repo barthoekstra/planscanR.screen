@@ -234,7 +234,50 @@ curation_train_model <- function(
 #' @export
 curation_predict_model <- function(model, records, config = NULL, threshold = NULL) {
   curation_model_check_config(model, config)
-  predict_selection(model, records, threshold = threshold)
+  if (nrow(records) == 0L) {
+    records$select_prob <- numeric(0)
+    records$selected_model <- logical(0)
+    return(records)
+  }
+
+  feature_names <- model$features
+  if (is.null(feature_names) || length(feature_names) == 0L) {
+    feature_contract <- model$feature_contract %||% list()
+    feature_names <- feature_contract$feature_names %||% character(0)
+  }
+  if (length(feature_names) == 0L) {
+    feature_names <- selection_feature_names(
+      model$topics,
+      model$labels,
+      include = model$include %||% character(0)
+    )
+  }
+  numeric_features <- feature_names[grepl(
+    "^(relevance_score_|class_score_)|^kw_total$",
+    feature_names
+  )]
+  complete <- rep(length(numeric_features) > 0L, nrow(records))
+  for (feature in numeric_features) {
+    if (!feature %in% names(records) || !is.numeric(records[[feature]])) {
+      complete[] <- FALSE
+      break
+    }
+    complete <- complete & is.finite(records[[feature]])
+  }
+
+  records$select_prob <- rep(NA_real_, nrow(records))
+  records$selected_model <- rep(FALSE, nrow(records))
+  if (!any(complete)) {
+    return(records)
+  }
+  predicted <- predict_selection(
+    model,
+    records[complete, , drop = FALSE],
+    threshold = threshold
+  )
+  records$select_prob[complete] <- predicted$select_prob
+  records$selected_model[complete] <- predicted$selected_model
+  records
 }
 
 #' Save a curation model through the existing selection-model serializer.
