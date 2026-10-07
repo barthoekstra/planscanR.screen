@@ -1,0 +1,205 @@
+{
+  "schema": "acq-ux1-browser.v1",
+  "browser": "134.0.6998.35",
+  "fixture_rows": 128000,
+  "scope": "loopback disposable synthetic fixture; no signed-in production session",
+  "actions": [
+    {
+      "label": "cold_landing",
+      "seconds": 2.789200590014458,
+      "received_websocket_bytes": 14841,
+      "browser_memory": {
+        "Documents": 3,
+        "Nodes": 1856,
+        "JSHeapUsedSize": 13778724,
+        "JSHeapTotalSize": 23625728
+      },
+      "state": {
+        "total": "128,000",
+        "rows": "",
+        "domRows": 0,
+        "selected": "64,000 (50.0%)",
+        "recalculating": false
+      }
+    },
+    {
+      "label": "warm_landing",
+      "seconds": 2.057670075058937,
+      "received_websocket_bytes": 14841,
+      "browser_memory": {
+        "Documents": 3,
+        "Nodes": 1864,
+        "JSHeapUsedSize": 17849432,
+        "JSHeapTotalSize": 38305792
+      },
+      "state": {
+        "total": "128,000",
+        "rows": "",
+        "domRows": 0,
+        "selected": "64,000 (50.0%)",
+        "recalculating": false
+      }
+    },
+    {
+      "label": "first_review_tab",
+      "seconds": 43.661374758005145,
+      "received_websocket_bytes": 7844538,
+      "browser_memory": {
+        "Documents": 3,
+        "Nodes": 3364,
+        "JSHeapUsedSize": 40845380,
+        "JSHeapTotalSize": 73957376
+      },
+      "state": {
+        "total": "128,000",
+        "rows": "showing 5000 of 128000 (capped)",
+        "page": 0,
+        "pageSize": 25,
+        "domRows": 25,
+        "selected": "64,000 (50.0%)",
+        "recalculating": false
+      }
+    },
+    {
+      "label": "repeat_review_tab",
+      "seconds": 0.6681049540042877,
+      "received_websocket_bytes": 0,
+      "browser_memory": {
+        "Documents": 3,
+        "Nodes": 3446,
+        "JSHeapUsedSize": 41595684,
+        "JSHeapTotalSize": 109608960
+      },
+      "state": {
+        "total": "128,000",
+        "rows": "showing 5000 of 128000 (capped)",
+        "page": 0,
+        "pageSize": 25,
+        "domRows": 25,
+        "selected": "64,000 (50.0%)",
+        "recalculating": false
+      }
+    },
+    {
+      "label": "first_page",
+      "seconds": 0.5775017130374909,
+      "received_websocket_bytes": 0,
+      "browser_memory": {
+        "Documents": 3,
+        "Nodes": 3651,
+        "JSHeapUsedSize": 48747808,
+        "JSHeapTotalSize": 109871104
+      },
+      "state": {
+        "total": "128,000",
+        "rows": "showing 5000 of 128000 (capped)",
+        "page": 1,
+        "pageSize": 25,
+        "domRows": 25,
+        "selected": "64,000 (50.0%)",
+        "recalculating": false
+      }
+    },
+    {
+      "label": "repeat_page",
+      "seconds": 0.6328657799959183,
+      "received_websocket_bytes": 0,
+      "browser_memory": {
+        "Documents": 3,
+        "Nodes": 4054,
+        "JSHeapUsedSize": 62720556,
+        "JSHeapTotalSize": 109871104
+      },
+      "state": {
+        "total": "128,000",
+        "rows": "showing 5000 of 128000 (capped)",
+        "page": 1,
+        "pageSize": 25,
+        "domRows": 25,
+        "selected": "64,000 (50.0%)",
+        "recalculating": false
+      }
+    },
+    {
+      "label": "first_filter",
+      "seconds": 0.5549784879684448,
+      "received_websocket_bytes": 0,
+      "browser_memory": {
+        "Documents": 3,
+        "Nodes": 4164,
+        "JSHeapUsedSize": 42355372,
+        "JSHeapTotalSize": 109871104
+      },
+      "state": {
+        "total": "128,000",
+        "rows": "showing 5000 of 128000 (capped)",
+        "page": 0,
+        "pageSize": 25,
+        "domRows": 1,
+        "selected": "64,000 (50.0%)",
+        "recalculating": false
+      }
+    },
+    {
+      "label": "repeat_filter",
+      "seconds": 0.6198083440065384,
+      "received_websocket_bytes": 0,
+      "browser_memory": {
+        "Documents": 3,
+        "Nodes": 5585,
+        "JSHeapUsedSize": 61049940,
+        "JSHeapTotalSize": 109871104
+      },
+      "state": {
+        "total": "128,000",
+        "rows": "showing 5000 of 128000 (capped)",
+        "page": 0,
+        "pageSize": 25,
+        "domRows": 1,
+        "selected": "64,000 (50.0%)",
+        "recalculating": false
+      }
+    },
+    {
+      "label": "first_threshold",
+      "seconds": 44.35627270495892,
+      "received_websocket_bytes": 7844620,
+      "browser_memory": {
+        "Documents": 3,
+        "Nodes": 3333,
+        "JSHeapUsedSize": 63418128,
+        "JSHeapTotalSize": 96501760
+      },
+      "state": {
+        "total": "128,000",
+        "rows": "showing 5000 of 128000 (capped)",
+        "page": 0,
+        "pageSize": 25,
+        "domRows": 25,
+        "selected": "64,000 (50.0%)",
+        "recalculating": false
+      }
+    },
+    {
+      "label": "repeat_threshold",
+      "seconds": 93.3867792929411,
+      "received_websocket_bytes": 15688096,
+      "browser_memory": {
+        "Documents": 3,
+        "Nodes": 3333,
+        "JSHeapUsedSize": 85289156,
+        "JSHeapTotalSize": 117735424
+      },
+      "state": {
+        "total": "128,000",
+        "rows": "showing 5000 of 128000 (capped)",
+        "page": 0,
+        "pageSize": 25,
+        "domRows": 25,
+        "selected": "64,000 (50.0%)",
+        "recalculating": false
+      }
+    }
+  ],
+  "errors": []
+}

@@ -1,0 +1,171 @@
+✔ | F W  S  OK | Context
+
+⠏ |          0 | acq-ux1-future                                                 Loading required package: shiny
+
+⠋ | 1        0 | acq-ux1-future                                                 
+⠼ | 2        3 | acq-ux1-future                                                 Tracing function "dbSendQuery" in environment <namespace:DBI>
+Tracing specified method for function "dbFetch" in package
+"namespace:RSQLite"
+Tracing function ".local" in package "RSQLite"
+Tracing function ".local" in package "RSQLite"
+Tracing function ".local" in package "RSQLite"
+Tracing function ".local" in package "RSQLite"
+Tracing function ".local" in package "RSQLite"
+Tracing function ".local" in package "RSQLite"
+Tracing function ".local" in package "RSQLite"
+Tracing function ".local" in package "RSQLite"
+Tracing function ".local" in package "RSQLite"
+Tracing function ".local" in package "RSQLite"
+Tracing function ".local" in package "RSQLite"
+Tracing function ".local" in package "RSQLite"
+Tracing function ".local" in package "RSQLite"
+Tracing function ".local" in package "RSQLite"
+Tracing function ".local" in package "RSQLite"
+Tracing function ".local" in package "RSQLite"
+Tracing function ".local" in package "RSQLite"
+Tracing function ".local" in package "RSQLite"
+Tracing function ".local" in package "RSQLite"
+Tracing function ".local" in package "RSQLite"
+Tracing function ".local" in package "RSQLite"
+Tracing function ".local" in package "RSQLite"
+Tracing function ".local" in package "RSQLite"
+Tracing function ".local" in package "RSQLite"
+Tracing function ".local" in package "RSQLite"
+Tracing function ".local" in package "RSQLite"
+Tracing function ".local" in package "RSQLite"
+Tracing function ".local" in package "RSQLite"
+Tracing function ".local" in package "RSQLite"
+Tracing function ".local" in package "RSQLite"
+Untracing function "dbSendQuery" in package "namespace:DBI"
+Untracing specified method for function "dbFetch" in package
+"namespace:RSQLite"
+
+⠧ | 4        4 | acq-ux1-future                                                 
+✖ | 5        8 | acq-ux1-future [65.8s]
+────────────────────────────────────────────────────────────────────────────────
+Failure ('test-acq-ux1-future.R:13:5'): future server retains rows beyond the display cap
+Expected `output$review_info` to be identical to "5004 rows".
+Differences:
+`actual`:   "showing 5000 of 5004 (capped)"
+`expected`: "5004 rows"                    
+
+Backtrace:
+     ▆
+  1. ├─shiny::testServer(...) at test-acq-ux1-future.R:7:3
+  2. │ ├─shiny:::withMockContext(...)
+  3. │ │ ├─shiny::isolate(...)
+  4. │ │ │ ├─shiny::..stacktraceoff..(...)
+  5. │ │ │ └─ctx$run(...)
+  6. │ │ │   ├─promises::with_promise_domain(...)
+  7. │ │ │   │ └─domain$wrapSync(expr)
+  8. │ │ │   ├─shiny::withReactiveDomain(...)
+  9. │ │ │   │ └─promises::with_promise_domain(...)
+ 10. │ │ │   │   └─domain$wrapSync(expr)
+ 11. │ │ │   │     └─base::force(expr)
+ 12. │ │ │   ├─shiny:::with_otel_span_context(...)
+ 13. │ │ │   │ └─base::force(expr)
+ 14. │ │ │   ├─shiny::captureStackTraces(...)
+ 15. │ │ │   │ └─promises::with_promise_domain(...)
+ 16. │ │ │   │   └─domain$wrapSync(expr)
+ 17. │ │ │   │     └─base::withCallingHandlers(expr, error = doCaptureStack)
+ 18. │ │ │   └─env$runWith(self, func)
+ 19. │ │ │     └─shiny (local) contextFunc()
+ 20. │ │ │       └─shiny::..stacktraceon..(expr)
+ 21. │ │ ├─shiny::withReactiveDomain(...)
+ 22. │ │ │ └─promises::with_promise_domain(...)
+ 23. │ │ │   └─domain$wrapSync(expr)
+ 24. │ │ │     └─base::force(expr)
+ 25. │ │ └─withr::with_options(...)
+ 26. │ │   └─base::force(code)
+ 27. │ └─rlang::eval_tidy(quosure, mask, rlang::caller_env())
+ 28. └─testthat::expect_identical(output$review_info, "5004 rows") at test-acq-ux1-future.R:13:5
+
+Failure ('test-acq-ux1-future.R:55:3'): future bounded page map sends only the selected page
+Expected `as.integer(metrics$payload_rows)` <= 25L.
+Actual comparison: 5004 > 25
+Difference: 4979 > 0
+
+Failure ('test-acq-ux1-future.R:61:3'): future widget payload excludes hidden fields
+Expected `metrics$hidden_fixture_fields_in_payload` to have length 0.
+Actual length: 2.
+
+Failure ('test-acq-ux1-future.R:71:3'): future polling token stays stable when the source is unchanged
+Expected `first` to be identical to `second`.
+Differences:
+  `actual`: 1791380590.087
+`expected`: 1791380590.097
+
+
+Failure ('test-acq-ux1-future.R:83:3'): unchanged dashboard summaries retain bounded attempts and parity
+Expected `probe$unaggregated_attempt_rows_materialized` to be identical to 0L.
+Differences:
+  `actual`: 2000
+`expected`:    0
+
+────────────────────────────────────────────────────────────────────────────────
+
+══ Results ═════════════════════════════════════════════════════════════════════
+Duration: 65.9 s
+
+── Failed tests ────────────────────────────────────────────────────────────────
+Failure ('test-acq-ux1-future.R:13:5'): future server retains rows beyond the display cap
+Expected `output$review_info` to be identical to "5004 rows".
+Differences:
+`actual`:   "showing 5000 of 5004 (capped)"
+`expected`: "5004 rows"                    
+
+Backtrace:
+     ▆
+  1. ├─shiny::testServer(...) at test-acq-ux1-future.R:7:3
+  2. │ ├─shiny:::withMockContext(...)
+  3. │ │ ├─shiny::isolate(...)
+  4. │ │ │ ├─shiny::..stacktraceoff..(...)
+  5. │ │ │ └─ctx$run(...)
+  6. │ │ │   ├─promises::with_promise_domain(...)
+  7. │ │ │   │ └─domain$wrapSync(expr)
+  8. │ │ │   ├─shiny::withReactiveDomain(...)
+  9. │ │ │   │ └─promises::with_promise_domain(...)
+ 10. │ │ │   │   └─domain$wrapSync(expr)
+ 11. │ │ │   │     └─base::force(expr)
+ 12. │ │ │   ├─shiny:::with_otel_span_context(...)
+ 13. │ │ │   │ └─base::force(expr)
+ 14. │ │ │   ├─shiny::captureStackTraces(...)
+ 15. │ │ │   │ └─promises::with_promise_domain(...)
+ 16. │ │ │   │   └─domain$wrapSync(expr)
+ 17. │ │ │   │     └─base::withCallingHandlers(expr, error = doCaptureStack)
+ 18. │ │ │   └─env$runWith(self, func)
+ 19. │ │ │     └─shiny (local) contextFunc()
+ 20. │ │ │       └─shiny::..stacktraceon..(expr)
+ 21. │ │ ├─shiny::withReactiveDomain(...)
+ 22. │ │ │ └─promises::with_promise_domain(...)
+ 23. │ │ │   └─domain$wrapSync(expr)
+ 24. │ │ │     └─base::force(expr)
+ 25. │ │ └─withr::with_options(...)
+ 26. │ │   └─base::force(code)
+ 27. │ └─rlang::eval_tidy(quosure, mask, rlang::caller_env())
+ 28. └─testthat::expect_identical(output$review_info, "5004 rows") at test-acq-ux1-future.R:13:5
+
+Failure ('test-acq-ux1-future.R:55:3'): future bounded page map sends only the selected page
+Expected `as.integer(metrics$payload_rows)` <= 25L.
+Actual comparison: 5004 > 25
+Difference: 4979 > 0
+
+Failure ('test-acq-ux1-future.R:61:3'): future widget payload excludes hidden fields
+Expected `metrics$hidden_fixture_fields_in_payload` to have length 0.
+Actual length: 2.
+
+Failure ('test-acq-ux1-future.R:71:3'): future polling token stays stable when the source is unchanged
+Expected `first` to be identical to `second`.
+Differences:
+  `actual`: 1791380590.087
+`expected`: 1791380590.097
+
+
+Failure ('test-acq-ux1-future.R:83:3'): unchanged dashboard summaries retain bounded attempts and parity
+Expected `probe$unaggregated_attempt_rows_materialized` to be identical to 0L.
+Differences:
+  `actual`: 2000
+`expected`:    0
+
+
+[ FAIL 5 | WARN 0 | SKIP 0 | PASS 8 ]
