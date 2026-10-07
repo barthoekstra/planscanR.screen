@@ -142,18 +142,26 @@ acquisition_campaign_selection_from_records <- function(catalog, records, thresh
     } else {
       NA_character_
     }
+    has_supplied_portal <- !is.na(supplied_portal) && nzchar(supplied_portal)
+    source_where <- if (has_supplied_portal) {
+      "WHERE country = ? AND portal = ? AND native_project_id = ?"
+    } else {
+      "WHERE country = ? AND native_project_id = ?"
+    }
+    source_params <- if (has_supplied_portal) {
+      list(country, supplied_portal, native_project_id)
+    } else {
+      list(country, native_project_id)
+    }
     candidates <- DBI::dbGetQuery(
       conn,
       paste(
         "SELECT source_ref_id, country, portal, native_project_id FROM acquisition_sources",
-        "WHERE country = ? AND native_project_id = ? ORDER BY portal, source_ref_id"
+        source_where,
+        "ORDER BY portal, source_ref_id"
       ),
-      params = list(country, native_project_id)
+      params = source_params
     )
-    has_supplied_portal <- !is.na(supplied_portal) && nzchar(supplied_portal)
-    if (has_supplied_portal) {
-      candidates <- candidates[candidates$portal == supplied_portal, , drop = FALSE]
-    }
     if (nrow(candidates) == 0L) {
       acquisition_campaign_identity_abort(
         if (has_supplied_portal) {
