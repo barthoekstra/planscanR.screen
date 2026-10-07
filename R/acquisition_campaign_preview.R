@@ -432,6 +432,7 @@ acquisition_campaign_preview <- function(
       country = item$country,
       portal = item$portal,
       native_project_id = item$native_project_id,
+      title = item$title %||% NA_character_,
       probability = item$probability,
       selected = item$selected,
       energy_kind = item$energy_kind,
@@ -677,6 +678,29 @@ acquisition_campaign_panel_preview_args <- function(preview) {
   preview
 }
 
+acquisition_campaign_preview_items_page <- function(
+  preview,
+  search = NULL,
+  sort_by = NULL,
+  sort_desc = FALSE,
+  page = 1L,
+  page_size = 25L
+) {
+  items <- if (is.list(preview)) preview$items else NULL
+  if (!is.data.frame(items)) {
+    items <- data.frame(stringsAsFactors = FALSE)
+  }
+  if (nrow(items) > 0L && !"title" %in% names(items)) items$title <- NA_character_
+  visible <- c(
+    "title", "country", "portal", "native_project_id", "source_ref_id",
+    "probability", "selected", "energy_kind", "priority", "priority_rule_id",
+    "priority_explanation", "exclusion_reason"
+  )
+  items <- items[, intersect(visible, names(items)), drop = FALSE]
+  items <- curation_app_query_rows(items, search = search, sort_by = sort_by, sort_desc = sort_desc)
+  curation_app_page_rows(items, page = page, page_size = page_size)
+}
+
 #' Build the optional Acquisition campaign preview panel.
 #' @param id Shiny module namespace.
 #' @return A Shiny tag list.
@@ -690,6 +714,22 @@ acquisition_campaign_panel_ui <- function(id = NULL) {
     shiny::numericInput(ns("campaign-threshold"), "Selection threshold", value = 0.5, min = 0, max = 1, step = 0.01),
     shiny::uiOutput(ns("campaign-status")),
     shiny::tableOutput(ns("campaign-summary")),
+    htmltools::div(
+      class = "curation-table-controls",
+      style = "display:flex;align-items:flex-end;flex-wrap:wrap;gap:8px;margin:6px 0 10px;",
+      shiny::textInput(ns("campaign-search"), "Search preview items", value = "", width = "260px"),
+      shiny::selectInput(
+        ns("campaign-sort"), "Sort by",
+        choices = c("Source" = "source_ref_id", "Title" = "title", "Country" = "country", "Portal" = "portal", "Probability" = "probability", "Priority" = "priority"),
+        selected = "source_ref_id"
+      ),
+      shiny::checkboxInput(ns("campaign-sort-desc"), "Descending", FALSE),
+      shiny::selectInput(ns("campaign-page-size"), "Rows per page", choices = c(25, 50, 100, 250), selected = 25),
+      shiny::numericInput(ns("campaign-page"), "Page", value = 1L, min = 1L, step = 1L),
+      shiny::actionButton(ns("campaign-page-prev"), "Previous page", class = "btn-outline-secondary btn-sm"),
+      shiny::actionButton(ns("campaign-page-next"), "Next page", class = "btn-outline-secondary btn-sm"),
+      shiny::textOutput(ns("campaign-page-info"), inline = TRUE)
+    ),
     shiny::tableOutput(ns("campaign-items")),
     shiny::actionButton(ns("campaign-submit"), "Submit acquisition campaign"),
     shiny::textOutput(ns("campaign-submit-result"))
@@ -753,6 +793,42 @@ acquisition_campaign_panel_server <- function(
       }
       tryCatch(do.call(acquisition_campaign_preview, c(list(catalog = catalog), resolved)), error = identity)
     })
+    campaign_page <- shiny::reactiveVal(1L)
+    campaign_page_size <- shiny::reactive({
+      curation_app_page_spec(page_size = input$`campaign-page-size`)$page_size
+    })
+    campaign_page_data <- shiny::reactive({
+      acquisition_campaign_preview_items_page(
+        current_preview(),
+        search = input$`campaign-search`,
+        sort_by = input$`campaign-sort`,
+        sort_desc = isTRUE(input$`campaign-sort-desc`),
+        page = campaign_page(), page_size = campaign_page_size()
+      )
+    })
+    set_campaign_page <- function(value) {
+      value <- max(1L, suppressWarnings(as.integer(value[[1L]] %||% 1L)))
+      campaign_page(value)
+      shiny::updateNumericInput(session, "campaign-page", value = value)
+    }
+    shiny::observeEvent(
+      list(input$`campaign-threshold`, input$`campaign-search`, input$`campaign-sort`, input$`campaign-sort-desc`, input$`campaign-page-size`),
+      set_campaign_page(1L),
+      ignoreInit = TRUE
+    )
+    shiny::observeEvent(input$`campaign-page`, set_campaign_page(input$`campaign-page`), ignoreInit = TRUE)
+    shiny::observeEvent(input$`campaign-page-prev`, set_campaign_page(campaign_page() - 1L), ignoreInit = TRUE)
+    shiny::observeEvent(input$`campaign-page-next`,
+      {
+        page_data <- campaign_page_data()
+        set_campaign_page(min(attr(page_data, "page") + 1L, attr(page_data, "page_count")))
+      },
+      ignoreInit = TRUE
+    )
+    output$`campaign-page-info` <- shiny::renderText({
+      rows <- campaign_page_data()
+      sprintf("Page %d of %d (%d items)", attr(rows, "page"), attr(rows, "page_count"), attr(rows, "total_count"))
+    })
     output$`campaign-status` <- shiny::renderUI({
       value <- current_preview()
       if (is.null(value)) {
@@ -787,11 +863,7 @@ acquisition_campaign_panel_server <- function(
     )
     output$`campaign-items` <- shiny::renderTable(
       {
-        value <- current_preview()
-        if (is.null(value) || inherits(value, "error")) {
-          return(data.frame())
-        }
-        value$items
+        campaign_page_data()
       },
       striped = TRUE
     )
