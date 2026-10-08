@@ -1575,7 +1575,7 @@ curation_app_acquisition_service <- function(service) {
   service
 }
 
-curation_app_acquisition_nav <- function(acquisition) {
+curation_app_acquisition_nav <- function(acquisition, storage_context = NULL) {
   if (is.null(acquisition)) {
     return(NULL)
   }
@@ -1584,7 +1584,8 @@ curation_app_acquisition_nav <- function(acquisition) {
       "Acquisition",
       acquisition_dashboard_ui(
         "acquisition",
-        preview = acquisition$preview %||% if (isTRUE(acquisition$available)) list(dynamic = TRUE) else NULL
+        preview = acquisition$preview %||% if (isTRUE(acquisition$available)) list(dynamic = TRUE) else NULL,
+        storage_context = storage_context
       )
     ))
   }
@@ -1602,6 +1603,14 @@ curation_app_ui <- function(config, logout_path = NULL, acquisition = NULL) {
   curation_app_require_ui()
   logout_path <- curation_app_validate_logout_path(logout_path)
   acquisition <- curation_app_acquisition_service(acquisition)
+  storage_context <- if (is.null(acquisition)) {
+    NULL
+  } else {
+    utils::modifyList(
+      list(state_root = config$artifact_paths$root),
+      acquisition$storage_context %||% list()
+    )
+  }
   selection_defaults <- config$selection_controls
   default_value <- function(name, fallback) {
     value <- selection_defaults[[name]]
@@ -1998,7 +2007,7 @@ curation_app_ui <- function(config, logout_path = NULL, acquisition = NULL) {
         fill = FALSE
       )
     ),
-    curation_app_acquisition_nav(acquisition)
+    curation_app_acquisition_nav(acquisition, storage_context = storage_context)
   )
 }
 
@@ -2535,6 +2544,14 @@ curation_app_server <- function(input, output, session, context) {
   acquisition <- curation_app_acquisition_service(
     context$acquisition %||% context$acquisition_catalog
   )
+  storage_context <- if (is.null(acquisition)) {
+    NULL
+  } else {
+    utils::modifyList(
+      list(state_root = config$artifact_paths$root),
+      acquisition$storage_context %||% list()
+    )
+  }
 
   # A session may outlive an account disablement or role change.  Recheck the
   # resolver periodically and close the socket when its credential is no
@@ -3004,7 +3021,8 @@ curation_app_server <- function(input, output, session, context) {
           is.null(nav) || identical(nav, "Acquisition")
         }),
         refresh_ms = acquisition$refresh_ms %||% 2000L,
-        page_size = acquisition$page_size %||% 50L
+        page_size = acquisition$page_size %||% 50L,
+        storage_context = storage_context
       ),
       error = function(error) {
         shiny::showNotification(

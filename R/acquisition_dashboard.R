@@ -829,7 +829,7 @@ acquisition_dashboard_target_choices <- function(
   stats::setNames(ids, labels)
 }
 
-acquisition_dashboard_ui <- function(id = NULL, preview = NULL) {
+acquisition_dashboard_ui <- function(id = NULL, preview = NULL, storage_context = NULL) {
   ns <- if (is.null(id)) identity else shiny::NS(id)
   campaign_panel <- if (is.null(preview)) {
     shiny::tags$div(
@@ -861,6 +861,7 @@ acquisition_dashboard_ui <- function(id = NULL, preview = NULL) {
         "@media (max-width:576px){.acquisition-dashboard .curation-help-text{position:fixed;left:1rem;right:1rem;top:auto;bottom:1rem;width:auto;}}"
       )),
       campaign_panel,
+      acquisition_storage_settings_ui(ns),
       shiny::h2("3. Monitor queued acquisition"),
       shiny::textOutput(ns("dashboard-actor")),
       shiny::tags$div(
@@ -988,7 +989,8 @@ acquisition_dashboard_server <- function(
   refresh_ms = 2000L,
   page_size = 50L,
   active = NULL,
-  target_limit = 100L
+  target_limit = 100L,
+  storage_context = NULL
 ) {
   acquisition_dashboard_require_ui()
   acquisition_catalog_connection(catalog)
@@ -1003,6 +1005,15 @@ acquisition_dashboard_server <- function(
   acquisition_controls_ensure_schema(catalog)
 
   shiny::moduleServer(id, function(input, output, session) {
+    acquisition_storage_settings_server(
+      input = input,
+      output = output,
+      session = session,
+      catalog = catalog,
+      actor_resolver = actor_resolver,
+      request = request,
+      storage_context = storage_context
+    )
     if (!is.null(preview)) {
       acquisition_campaign_panel_server(
         id = "campaign",
@@ -1369,7 +1380,8 @@ acquisition_dashboard_app <- function(
   submit_fn = acquisition_campaign_submit_authenticated,
   refresh_ms = 2000L,
   page_size = 50L,
-  target_limit = 100L
+  target_limit = 100L,
+  storage_context = NULL
 ) {
   acquisition_dashboard_require_ui()
   acquisition_catalog_connection(catalog)
@@ -1383,7 +1395,10 @@ acquisition_dashboard_app <- function(
   target_limit <- acquisition_dashboard_validate_page(1L, target_limit)$page_size
   acquisition_controls_ensure_schema(catalog)
   shiny::shinyApp(
-    ui = shiny::fluidPage(acquisition_dashboard_ui("dashboard", preview = preview)),
+    ui = shiny::fluidPage(acquisition_dashboard_ui(
+      "dashboard",
+      preview = preview, storage_context = storage_context
+    )),
     server = function(input, output, session) {
       acquisition_dashboard_server(
         id = "dashboard",
@@ -1395,7 +1410,8 @@ acquisition_dashboard_app <- function(
         submit_fn = submit_fn,
         refresh_ms = refresh_ms,
         page_size = page_size,
-        target_limit = target_limit
+        target_limit = target_limit,
+        storage_context = storage_context
       )
     }
   )
@@ -1417,6 +1433,7 @@ run_acquisition_dashboard <- function(
   submit_fn = acquisition_campaign_submit_authenticated,
   refresh_ms = 2000L,
   page_size = 50L,
+  storage_context = NULL,
   launch.browser = interactive(),
   ...
 ) {
@@ -1428,7 +1445,8 @@ run_acquisition_dashboard <- function(
     preview = preview,
     submit_fn = submit_fn,
     refresh_ms = refresh_ms,
-    page_size = page_size
+    page_size = page_size,
+    storage_context = storage_context
   )
   shiny::runApp(app, launch.browser = launch.browser, ...)
 }
