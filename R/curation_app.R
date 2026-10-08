@@ -402,15 +402,168 @@ curation_app_page_rows <- function(data, page = 1L, page_size = 25L, max_page_si
   rows
 }
 
+# Keep technical values out of the first reading pass while retaining their
+# exact values in the underlying row identity.  Callers use this only for
+# presentation; filtering, sorting, and mutation continue to use the raw
+# values.
+curation_app_display_label <- function(value, fallback = "Unknown") {
+  if (length(value) == 0L) {
+    return(character(0))
+  }
+  value <- as.character(value)
+  missing <- is.na(value) | !nzchar(trimws(value))
+  value[missing] <- fallback
+  key <- tolower(gsub("[[:space:]-]+", "_", trimws(value)))
+  known <- c(
+    queued = "Queued",
+    running = "Running",
+    retry_wait = "Waiting to retry",
+    succeeded = "Succeeded",
+    failed = "Failed",
+    blocked = "Blocked",
+    cancelled = "Cancelled",
+    successful_empty = "Completed with no documents",
+    complete = "Complete",
+    discovered = "Documents found",
+    partial = "Partially downloaded",
+    pending = "Downloads pending",
+    error = "Error",
+    unknown = "Unknown",
+    current_unique = "Current match",
+    historical_only = "Historical only",
+    unverified = "Unverified",
+    ambiguous = "Ambiguous",
+    pending_review = "Pending review",
+    verified = "Verified",
+    mixed = "Mixed",
+    keep = "Keep",
+    drop = "Drop",
+    unsure = "Unsure",
+    selected = "Selected",
+    not_selected = "Not selected",
+    wind = "Wind",
+    solar = "Solar",
+    power_grid = "Power grid",
+    renewable_energy = "Renewable energy",
+    energy_transition_strategy = "Energy transition strategy",
+    renewable_zoning = "Renewable zoning",
+    storage_migration = "Storage migration",
+    discover = "Discovery",
+    download = "Download",
+    ingest = "Ingestion"
+  )
+  mapped <- unname(known[key])
+  technical <- !is.na(mapped)
+  value[technical] <- mapped[technical]
+  technical_unknown <- !technical & !missing & grepl("^[a-z0-9]+([_-][a-z0-9]+)+$", key)
+  value[technical_unknown] <- tools::toTitleCase(gsub("_", " ", key[technical_unknown]))
+  value
+}
+
+curation_app_format_date <- function(value, fallback = "Unknown") {
+  if (length(value) == 0L) {
+    return(character(0))
+  }
+  vapply(value, function(one) {
+    if (is.null(one) || length(one) == 0L || is.na(one) || !nzchar(trimws(as.character(one)))) {
+      return(fallback)
+    }
+    if (inherits(one, "Date")) {
+      return(format(one, "%d %b %Y"))
+    }
+    if (inherits(one, "POSIXt")) {
+      return(format(one, "%d %b %Y"))
+    }
+    text <- trimws(as.character(one))
+    parse_text <- sub("T", " ", text, fixed = TRUE)
+    parse_text <- sub("Z$", "", parse_text)
+    parsed <- tryCatch(
+      suppressWarnings(as.POSIXct(parse_text, tz = "UTC")),
+      error = function(error) NA
+    )
+    if (is.na(parsed)) {
+      parsed_date <- tryCatch(
+        suppressWarnings(as.Date(text)),
+        error = function(error) NA
+      )
+      if (!is.na(parsed_date)) {
+        return(format(parsed_date, "%d %b %Y"))
+      }
+      return(text)
+    }
+    format(parsed, "%d %b %Y")
+  }, character(1))
+}
+
+curation_app_format_datetime <- function(value, fallback = "Unknown") {
+  if (length(value) == 0L) {
+    return(character(0))
+  }
+  vapply(value, function(one) {
+    if (is.null(one) || length(one) == 0L || is.na(one) || !nzchar(trimws(as.character(one)))) {
+      return(fallback)
+    }
+    text <- trimws(as.character(one))
+    parse_text <- sub("T", " ", text, fixed = TRUE)
+    parse_text <- sub("Z$", "", parse_text)
+    parsed <- tryCatch(
+      suppressWarnings(as.POSIXct(parse_text, tz = "UTC")),
+      error = function(error) NA
+    )
+    if (is.na(parsed)) {
+      return(text)
+    }
+    format(parsed, "%d %b %Y %H:%M:%S UTC", tz = "UTC")
+  }, character(1))
+}
+
+curation_app_format_size <- function(value, fallback = "Unknown") {
+  if (length(value) == 0L) {
+    return(character(0))
+  }
+  vapply(value, function(one) {
+    bytes <- suppressWarnings(as.numeric(one))
+    if (length(bytes) == 0L || is.na(bytes) || !is.finite(bytes) || bytes < 0) {
+      return(fallback)
+    }
+    units <- c("B", "KB", "MB", "GB", "TB")
+    index <- min(length(units), floor(log(max(bytes, 1), base = 1024)) + 1L)
+    scaled <- bytes / 1024^(index - 1L)
+    if (index == 1L || scaled >= 100) {
+      sprintf("%.0f %s", scaled, units[[index]])
+    } else if (scaled >= 10) {
+      sprintf("%.1f %s", scaled, units[[index]])
+    } else {
+      sprintf("%.2f %s", scaled, units[[index]])
+    }
+  }, character(1))
+}
+
+curation_app_display_title <- function(value, fallback = "Untitled project") {
+  value <- as.character(value)
+  missing <- is.na(value) | !nzchar(trimws(value))
+  value[missing] <- fallback
+  trimws(value)
+}
+
+curation_app_help <- function(label, text) {
+  htmltools::tags$span(
+    class = "curation-help",
+    tabindex = "0",
+    role = "note",
+    `aria-label` = paste(label, text, sep = ": "),
+    "?",
+    htmltools::tags$span(class = "curation-help-text", text)
+  )
+}
+
 curation_app_compact_display <- function(data, blind = FALSE) {
   data <- as.data.frame(data, stringsAsFactors = FALSE)
   if (nrow(data) == 0L) {
     return(data)
   }
   if (!"title" %in% names(data)) data$title <- NA_character_
-  title <- as.character(data$title)
-  title[is.na(title) | !nzchar(trimws(title))] <- "(no title)"
-  data$title <- title
+  data$title <- curation_app_display_title(data$title)
   if (!"historical_badge" %in% names(data)) {
     data$historical_badge <- vapply(seq_len(nrow(data)), function(i) {
       badge <- curation_app_historical_badge(data[i, , drop = FALSE])
@@ -418,7 +571,7 @@ curation_app_compact_display <- function(data, blind = FALSE) {
     }, character(1))
   }
   visible <- c(
-    "decision", "country", "portal", "native_project_id", "source_ref_id", "document_id", "title",
+    "decision", "title", "country", "portal", "native_project_id", "source_ref_id", "document_id",
     "cosine_max", "class_label", "class_score", "kw_total", "selected", "selected_model",
     "n_attachments", "has_attachments", "n_downloaded", "has_downloaded",
     "historical_mutation_allowed", "historical_badge", "review_revision"
@@ -490,6 +643,18 @@ curation_app_historical_only_table <- function(
     ),
     names(rows)
   ), drop = FALSE]
+  for (column in intersect(c("historical_linkage", "current_linkage", "decision"), names(shown))) {
+    shown[[column]] <- curation_app_display_label(shown[[column]])
+  }
+  if ("reviewed_at" %in% names(shown)) {
+    shown$reviewed_at <- vapply(shown$reviewed_at, function(one) {
+      if (is.na(one) || !nzchar(trimws(as.character(one)))) {
+        return("Unknown")
+      }
+      parts <- strsplit(as.character(one), " | ", fixed = TRUE)[[1L]]
+      paste(curation_app_format_datetime(parts), collapse = " | ")
+    }, character(1))
+  }
   columns <- list(
     country = reactable::colDef(name = "Country", width = 90),
     document_id = reactable::colDef(name = "Document", width = 160),
@@ -994,7 +1159,7 @@ curation_app_record_detail <- function(row, config) {
   text_or <- function(value, fallback) if (has(value)) as.character(value) else fallback
   country <- as.character(curation_app_column_value(row, "country", ""))
   document_id <- as.character(curation_app_column_value(row, "document_id", ""))
-  title <- curation_app_column_value(row, "title")
+  title <- curation_app_display_title(curation_app_column_value(row, "title"))
   summary <- curation_app_column_value(row, "summary")
   url <- curation_app_column_value(row, "url")
   htmltools::div(
@@ -1008,7 +1173,7 @@ curation_app_record_detail <- function(row, config) {
       htmltools::div(
         style = "flex:1;min-width:280px;",
         htmltools::tags$b("Original"),
-        htmltools::tags$h5(text_or(title, "(no title)")),
+        htmltools::tags$h5(text_or(title, "Untitled project")),
         htmltools::tags$p(text_or(summary, "(no summary)"), style = "white-space:pre-wrap;")
       ),
       htmltools::div(
@@ -1018,7 +1183,7 @@ curation_app_record_detail <- function(row, config) {
           htmltools::tags$p("Translation disabled; original text shown.", style = "color:#888;")
         } else {
           htmltools::tagList(
-            htmltools::tags$h5(text_or(tr$title_en, "(no title)")),
+            htmltools::tags$h5(text_or(tr$title_en, "Untitled project")),
             htmltools::tags$p(text_or(tr$summary_en, "(no summary)"), style = "white-space:pre-wrap;")
           )
         }
@@ -1235,6 +1400,14 @@ curation_app_table <- function(
     data,
     page = page, page_size = page_size, max_page_size = max_page_size
   )
+  if ("title" %in% names(data)) data$title <- curation_app_display_title(data$title)
+  if ("class_label" %in% names(data)) data$class_label <- curation_app_display_label(data$class_label)
+  for (column in intersect(c("selected", "selected_model"), names(data))) {
+    selected <- as.logical(data[[column]])
+    data[[column]] <- curation_app_display_label(
+      ifelse(is.na(selected), "unknown", ifelse(selected, "selected", "not_selected"))
+    )
+  }
   data$historical_badge <- vapply(seq_len(nrow(data)), function(i) {
     badge <- curation_app_historical_badge(data[i, , drop = FALSE])
     if (is.null(badge)) "" else as.character(badge)
@@ -1252,12 +1425,12 @@ curation_app_table <- function(
       name = "Review", sticky = "left", width = 160, sortable = FALSE,
       filterable = FALSE, html = TRUE, cell = curation_app_decision_cell(source, reviewer_id, render_id)
     ),
+    title = reactable::colDef(name = "Project title", minWidth = 260, cell = trunc_cell),
     country = reactable::colDef(name = "Country", width = 90, align = "center"),
     portal = reactable::colDef(name = "Portal", width = 140),
     source_ref_id = reactable::colDef(name = "Source", width = 150),
     native_project_id = reactable::colDef(name = "Portal project", width = 150),
-    document_id = reactable::colDef(name = "Document", width = 130),
-    title = reactable::colDef(name = "Title", minWidth = 220, cell = trunc_cell),
+    document_id = reactable::colDef(name = "Document ID", width = 130),
     cosine_max = reactable::colDef(name = "Topic match", width = 120, format = reactable::colFormat(digits = 3)),
     class_label = reactable::colDef(name = "Category", width = 140),
     class_score = reactable::colDef(name = "Category confidence", width = 160, format = reactable::colFormat(digits = 2)),
@@ -1306,16 +1479,17 @@ curation_app_single_record_ui <- function(row, config) {
   val <- function(x) if (length(x) == 1L && !is.na(x) && nzchar(trimws(as.character(x)))) as.character(x) else NULL
   country <- as.character(curation_app_column_value(row, "country", ""))
   document_id <- as.character(curation_app_column_value(row, "document_id", ""))
-  title <- curation_app_column_value(row, "title")
+  title <- curation_app_display_title(curation_app_column_value(row, "title"))
   summary <- curation_app_column_value(row, "summary")
   url <- curation_app_column_value(row, "url")
   meta <- list(
-    Date = val(curation_app_column_value(row, "date_decision") %||% curation_app_column_value(row, "year")),
-    Category = val(curation_app_column_value(row, "native_type")),
-    Status = val(curation_app_column_value(row, "status")),
+    Date = val(curation_app_format_date(curation_app_column_value(row, "date_decision") %||% curation_app_column_value(row, "year"))),
+    Category = val(curation_app_display_label(curation_app_column_value(row, "native_type"))),
+    Status = val(curation_app_display_label(curation_app_column_value(row, "status"))),
     Authority = val(curation_app_column_value(row, "competent_authority")),
     Proponent = val(curation_app_column_value(row, "proponent")),
-    Jurisdiction = val(curation_app_column_value(row, "jurisdiction"))
+    Jurisdiction = val(curation_app_column_value(row, "jurisdiction")),
+    Size = if ("size_bytes" %in% names(row)) val(curation_app_format_size(curation_app_column_value(row, "size_bytes"))) else NULL
   )
   meta <- meta[!vapply(meta, is.null, logical(1))]
   meta_ui <- if (length(meta) == 0L) {
@@ -1344,7 +1518,7 @@ curation_app_single_record_ui <- function(row, config) {
       htmltools::div(
         style = "flex:1;min-width:320px;",
         htmltools::tags$b("Original"),
-        htmltools::tags$h4(text_or(title, "(no title)")),
+        htmltools::tags$h4(text_or(title, "Untitled project")),
         htmltools::tags$p(text_or(summary, "(no summary)"), style = "white-space:pre-wrap;")
       ),
       htmltools::div(
@@ -1354,7 +1528,7 @@ curation_app_single_record_ui <- function(row, config) {
           htmltools::tags$p("Translation disabled; original text shown.", style = "color:#888;")
         } else {
           htmltools::tagList(
-            htmltools::tags$h4(text_or(tr$title_en, "(no title)")),
+            htmltools::tags$h4(text_or(tr$title_en, "Untitled project")),
             htmltools::tags$p(text_or(tr$summary_en, "(no summary)"), style = "white-space:pre-wrap;")
           )
         }
@@ -1458,7 +1632,19 @@ curation_app_ui <- function(config, logout_path = NULL, acquisition = NULL) {
         ".curation-table-controls .checkbox{margin:0 0 7px;}",
         ".curation-stat{font-variant-numeric:tabular-nums;font-size:1.35rem;font-weight:600;}",
         ".curation-comparison{width:100%;border-collapse:collapse;}",
-        ".curation-comparison td,.curation-comparison th{padding:7px;border-bottom:1px solid #eee;}"
+        ".curation-comparison td,.curation-comparison th{padding:7px;border-bottom:1px solid #eee;}",
+        ".curation-help{display:inline-flex;position:relative;align-items:center;justify-content:center;",
+        "width:1.25rem;height:1.25rem;margin-left:.25rem;border:1px solid currentColor;",
+        "border-radius:50%;font-size:.8rem;font-weight:600;cursor:help;}",
+        ".curation-help:focus{outline:3px solid rgba(14,60,98,.35);outline-offset:2px;}",
+        ".curation-help-text{display:none;position:absolute;z-index:1080;top:calc(100% + .35rem);left:0;",
+        "width:18rem;padding:.55rem .7rem;border:1px solid #adb5bd;border-radius:.35rem;",
+        "background:#fff;color:#212529;font-size:.875rem;font-weight:400;line-height:1.35;",
+        "box-shadow:0 .25rem .75rem rgba(0,0,0,.15);}",
+        ".curation-help:hover .curation-help-text,.curation-help:focus .curation-help-text{display:block;position:fixed;left:1rem;right:auto;top:auto;bottom:1rem;width:18rem;max-width:calc(100vw - 2rem);}",
+        ".reactable,.shiny-table{max-width:100%;overflow-x:auto;}",
+        ".curation-table-controls{max-width:100%;}",
+        "@media (max-width:576px){.curation-help-text{position:fixed;left:1rem;right:1rem;top:auto;bottom:1rem;width:auto;}}"
       )),
       htmltools::tags$script(htmltools::HTML(
         "window.__curationReviewState = window.__curationReviewState || {};",
@@ -1626,7 +1812,15 @@ curation_app_ui <- function(config, logout_path = NULL, acquisition = NULL) {
         bslib$accordion(
           open = FALSE,
           bslib$accordion_panel(
-            "Heuristic knobs",
+            "Advanced selection settings",
+            htmltools::div(
+              shiny$helpText("These controls change how records are scored and selected. They do not change the source records."),
+              curation_app_help(
+                "Selection scores",
+                "These controls change how records are scored and selected. They do not change the source records."
+              )
+            ),
+            shiny$helpText("Adjust scoring only when you need to inspect a different selection view."),
             shiny$sliderInput("threshold", "Cosine threshold", 0, 1, as.numeric(default_value("relevance_threshold", 0.5)), 0.01),
             shiny$sliderInput("kw_min", "Min keyword hits", 0, 6, as.numeric(default_value("kw_min", 2)), 1),
             shiny$checkboxInput("use_classifier", "Use classifier arm", isTRUE(default_value("use_classifier", TRUE))),
@@ -1639,16 +1833,28 @@ curation_app_ui <- function(config, logout_path = NULL, acquisition = NULL) {
           )
         )
       ),
-      htmltools::tags$hr(),
-      shiny$selectInput("learner", "Selection model", choices = learner_choices, selected = unname(learner_choices[[1L]])),
-      shiny$actionButton("train_model", "Train selection model", class = "btn-outline-primary btn-sm"),
-      shiny$uiOutput("model_info"),
-      shiny$sliderInput("model_threshold", "Model decision threshold", 0, 1, 0.5, 0.01),
-      shiny$actionButton("compute_lc", "Compute learning curve", class = "btn-primary btn-sm"),
-      plotly::plotlyOutput("learning_curve_plot", height = "260px"),
-      htmltools::tags$hr(),
-      shiny$actionButton("rebuild", "Rebuild snapshot", class = "btn-outline-secondary btn-sm"),
-      shiny$uiOutput("snapshot_info")
+      bslib$accordion(
+        open = FALSE,
+        bslib$accordion_panel(
+          "Advanced model tools",
+          htmltools::div(
+            shiny$helpText("Training, learning curves, and snapshot rebuilds are administrative operations. Review the current model details before using them."),
+            curation_app_help(
+              "Model tools",
+              "Training, learning curves, and snapshot rebuilds are administrative operations. Review the current model details before using them."
+            )
+          ),
+          shiny$selectInput("learner", "Selection model", choices = learner_choices, selected = unname(learner_choices[[1L]])),
+          shiny$actionButton("train_model", "Train selection model", class = "btn-outline-primary btn-sm"),
+          shiny$uiOutput("model_info"),
+          shiny$sliderInput("model_threshold", "Model decision threshold", 0, 1, 0.5, 0.01),
+          shiny$actionButton("compute_lc", "Compute learning curve", class = "btn-primary btn-sm"),
+          plotly::plotlyOutput("learning_curve_plot", height = "260px"),
+          htmltools::tags$hr(),
+          shiny$actionButton("rebuild", "Rebuild snapshot", class = "btn-outline-secondary btn-sm"),
+          shiny$uiOutput("snapshot_info")
+        )
+      )
     ),
     bslib$nav_panel(
       "Overview",
@@ -1663,11 +1869,6 @@ curation_app_ui <- function(config, logout_path = NULL, acquisition = NULL) {
         bslib$card(bslib$card_header("Pipeline funnel"), plotly::plotlyOutput("funnel_plot", height = "360px")),
         bslib$card(bslib$card_header("Per-country breakdown"), reactable::reactableOutput("funnel_table")),
         col_widths = c(7, 5)
-      ),
-      bslib$card(
-        bslib$card_header("Historical imported labels"),
-        shiny$helpText("Historical labels retain source and linkage attribution. Unresolved rows are read-only."),
-        reactable::reactableOutput("historical_overview_tbl")
       ),
       bslib$card(
         bslib$card_header(
@@ -1721,7 +1922,11 @@ curation_app_ui <- function(config, logout_path = NULL, acquisition = NULL) {
       ),
       bslib$card(
         bslib$card_header("Historical imported labels"),
-        shiny$helpText("Historical labels retain source and linkage attribution. Unresolved rows are read-only."),
+        shiny$helpText("Historical labels retain source and linkage attribution. Unresolved rows are read-only. Review history is kept here; Overview shows counts only."),
+        curation_app_help(
+          "Historical review",
+          "This table is the authoritative place to inspect attribution, unresolved linkage, and editing restrictions."
+        ),
         htmltools::div(
           class = "curation-table-controls",
           shiny$textInput("historical_search", "Search historical labels", value = "", width = "260px"),
@@ -3161,13 +3366,6 @@ curation_app_server <- function(input, output, session, context) {
     data <- curation_app_funnel(filtered(), config, context = funnel_context(), by_country = TRUE)
     reactable::reactable(data[, intersect(c("country", "stage", "n", "pct"), names(data)), drop = FALSE], groupBy = "country", compact = TRUE, pagination = FALSE)
   })
-  output$historical_overview_tbl <- reactable::renderReactable({
-    curation_app_historical_only_table(
-      historical_links,
-      current_records = records(), reviews = reviews(), page = 1L, page_size = 25L
-    )
-  })
-
   historical_page <- shiny::reactiveVal(1L)
   historical_page_size <- shiny::reactive({
     curation_app_page_spec(page_size = input$historical_page_size)$page_size

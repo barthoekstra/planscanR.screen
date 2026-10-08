@@ -713,6 +713,49 @@ acquisition_campaign_preview_items_page <- function(
   curation_app_page_rows(items, page = page, page_size = page_size)
 }
 
+acquisition_campaign_preview_display_table <- function(data) {
+  data <- as.data.frame(data, stringsAsFactors = FALSE)
+  if (nrow(data) == 0L) {
+    return(data)
+  }
+  if ("title" %in% names(data)) {
+    data$title <- curation_app_display_title(data$title)
+  }
+  if ("country" %in% names(data)) data$country <- toupper(as.character(data$country))
+  if ("energy_kind" %in% names(data)) {
+    data$energy_kind <- curation_app_display_label(data$energy_kind)
+  }
+  if ("selected" %in% names(data)) {
+    # Summary rows carry numeric counts; only item rows carry the logical
+    # selection flag that should be rendered as a state label.
+    if (is.logical(data$selected)) {
+      selected <- data$selected
+      data$selected <- ifelse(is.na(selected), "Unknown", ifelse(selected, "Selected", "Excluded"))
+    }
+  }
+  if ("priority_rule_id" %in% names(data)) {
+    missing <- is.na(data$priority_rule_id) | !nzchar(trimws(as.character(data$priority_rule_id)))
+    data$priority_rule_id <- as.character(data$priority_rule_id)
+    data$priority_rule_id[missing] <- "Default priority"
+  }
+  if ("exclusion_reason" %in% names(data)) {
+    missing <- is.na(data$exclusion_reason) | !nzchar(trimws(as.character(data$exclusion_reason)))
+    data$exclusion_reason[missing] <- "None"
+  }
+  if ("probability" %in% names(data)) {
+    probability <- suppressWarnings(as.numeric(data$probability))
+    data$probability <- ifelse(
+      is.na(probability), "Unknown", sprintf("%.0f%%", 100 * probability)
+    )
+  }
+  names(data) <- vapply(names(data), acquisition_dashboard_display_name, character(1))
+  names(data)[names(data) == "Title"] <- "Project title"
+  names(data)[names(data) == "Priority rule id"] <- "Priority rule"
+  names(data)[names(data) == "Priority explanation"] <- "Why this priority"
+  names(data)[names(data) == "Exclusion reason"] <- "Reason excluded"
+  data
+}
+
 #' Build the optional Acquisition campaign preview panel.
 #' @param id Shiny module namespace.
 #' @return A Shiny tag list.
@@ -720,30 +763,71 @@ acquisition_campaign_preview_items_page <- function(
 acquisition_campaign_panel_ui <- function(id = NULL) {
   ns <- if (is.null(id)) identity else shiny::NS(id)
   shiny::tags$div(
+    class = "acquisition-campaign-preview",
     id = ns("campaign-preview"),
+    shiny::tags$style(htmltools::HTML(
+      ".acquisition-campaign-preview{max-width:100%;}",
+      ".acquisition-campaign-preview table{max-width:100%;}",
+      ".acquisition-campaign-preview .shiny-table{display:block;overflow-x:auto;}",
+      ".acquisition-campaign-preview details{margin:8px 0;}",
+      ".acquisition-campaign-preview summary{cursor:pointer;font-weight:600;padding:6px 0;}",
+      ".acquisition-campaign-preview .curation-help{display:inline-flex;position:relative;align-items:center;justify-content:center;",
+      "width:1.25rem;height:1.25rem;margin-left:.25rem;border:1px solid currentColor;border-radius:50%;",
+      "font-size:.8rem;font-weight:600;cursor:help;}",
+      ".acquisition-campaign-preview .curation-help:focus{outline:3px solid rgba(14,60,98,.35);outline-offset:2px;}",
+      ".acquisition-campaign-preview .curation-help-text{display:none;position:absolute;z-index:1080;top:calc(100% + .35rem);left:0;",
+      "width:18rem;padding:.55rem .7rem;border:1px solid #adb5bd;border-radius:.35rem;background:#fff;color:#212529;",
+      "font-size:.875rem;font-weight:400;line-height:1.35;box-shadow:0 .25rem .75rem rgba(0,0,0,.15);}",
+      ".acquisition-campaign-preview .curation-help:hover .curation-help-text,.acquisition-campaign-preview .curation-help:focus .curation-help-text{display:block;position:fixed;left:1rem;right:auto;top:auto;bottom:1rem;width:18rem;max-width:calc(100vw - 2rem);}",
+      "@media (max-width:576px){.acquisition-campaign-preview .curation-help-text{position:fixed;left:1rem;right:1rem;top:auto;bottom:1rem;width:auto;}}"
+    )),
     shiny::h2("Acquisition preview"),
     shiny::helpText("Preview is read-only; attachment and file totals stay unknown until discovery."),
-    shiny::numericInput(ns("campaign-threshold"), "Selection threshold", value = 0.5, min = 0, max = 1, step = 0.01),
+    htmltools::div(
+      class = "d-flex align-items-end flex-wrap gap-2",
+      shiny::numericInput(ns("campaign-threshold"), "Selection threshold", value = 0.5, min = 0, max = 1, step = 0.01),
+      curation_app_help(
+        "Selection threshold",
+        "Projects at or above this probability are selected for the preview. Changing it recalculates the read-only preview only."
+      )
+    ),
     shiny::uiOutput(ns("campaign-status")),
     shiny::tableOutput(ns("campaign-summary")),
-    htmltools::div(
-      class = "curation-table-controls",
-      style = "display:flex;align-items:flex-end;flex-wrap:wrap;gap:8px;margin:6px 0 10px;",
-      shiny::textInput(ns("campaign-search"), "Search preview items", value = "", width = "260px"),
-      shiny::selectInput(
-        ns("campaign-sort"), "Sort by",
-        choices = c("Source" = "source_ref_id", "Title" = "title", "Country" = "country", "Portal" = "portal", "Probability" = "probability", "Priority" = "priority"),
-        selected = "source_ref_id"
+    htmltools::tags$details(
+      htmltools::tags$summary(
+        "Advanced preview controls",
+        curation_app_help(
+          "Preview controls",
+          "Search and sorting change the displayed page only. Preview never creates queue jobs."
+        )
       ),
-      shiny::checkboxInput(ns("campaign-sort-desc"), "Descending", FALSE),
-      shiny::selectInput(ns("campaign-page-size"), "Rows per page", choices = c(25, 50, 100, 250), selected = 25),
-      shiny::numericInput(ns("campaign-page"), "Page", value = 1L, min = 1L, step = 1L),
-      shiny::actionButton(ns("campaign-page-prev"), "Previous page", class = "btn-outline-secondary btn-sm"),
-      shiny::actionButton(ns("campaign-page-next"), "Next page", class = "btn-outline-secondary btn-sm"),
-      shiny::textOutput(ns("campaign-page-info"), inline = TRUE)
+      htmltools::div(
+        class = "curation-table-controls",
+        style = "display:flex;align-items:flex-end;flex-wrap:wrap;gap:8px;margin:6px 0 10px;",
+        shiny::textInput(ns("campaign-search"), "Search preview items", value = "", width = "260px"),
+        shiny::selectInput(
+          ns("campaign-sort"), "Sort by",
+          choices = c("Source" = "source_ref_id", "Title" = "title", "Country" = "country", "Portal" = "portal", "Probability" = "probability", "Priority" = "priority"),
+          selected = "source_ref_id"
+        ),
+        shiny::checkboxInput(ns("campaign-sort-desc"), "Descending", FALSE),
+        shiny::selectInput(ns("campaign-page-size"), "Rows per page", choices = c(25, 50, 100, 250), selected = 25),
+        shiny::numericInput(ns("campaign-page"), "Page", value = 1L, min = 1L, step = 1L),
+        shiny::actionButton(ns("campaign-page-prev"), "Previous page", class = "btn-outline-secondary btn-sm"),
+        shiny::actionButton(ns("campaign-page-next"), "Next page", class = "btn-outline-secondary btn-sm"),
+        shiny::textOutput(ns("campaign-page-info"), inline = TRUE)
+      )
     ),
     shiny::tableOutput(ns("campaign-items")),
-    shiny::actionButton(ns("campaign-submit"), "Submit acquisition campaign"),
+    htmltools::div(
+      class = "d-flex align-items-center flex-wrap gap-2",
+      shiny::actionButton(ns("campaign-submit"), "Submit acquisition campaign"),
+      shiny::helpText("Submission creates durable queue work for the selected projects and is restricted to administrators."),
+      curation_app_help(
+        "Submit acquisition campaign",
+        "This is the explicit transition from a read-only preview to queued acquisition work. Confirm the target and next monitor step before submitting."
+      )
+    ),
     shiny::textOutput(ns("campaign-submit-result"))
   )
 }
@@ -874,7 +958,7 @@ acquisition_campaign_panel_server <- function(
         if (is.null(value) || inherits(value, "error")) {
           return(data.frame())
         }
-        data.frame(
+        acquisition_campaign_preview_display_table(data.frame(
           model = value$model_id,
           model_snapshot = value$model_input_snapshot_id %||% value$input_snapshot_id,
           prepared_snapshot = value$prepared_snapshot_id %||% value$input_snapshot_id,
@@ -886,13 +970,13 @@ acquisition_campaign_panel_server <- function(
           jobs = value$counts$jobs,
           attachments = "unknown until discovery",
           stringsAsFactors = FALSE
-        )
+        ))
       },
       striped = TRUE
     )
     output$`campaign-items` <- shiny::renderTable(
       {
-        campaign_page_data()
+        acquisition_campaign_preview_display_table(campaign_page_data())
       },
       striped = TRUE
     )

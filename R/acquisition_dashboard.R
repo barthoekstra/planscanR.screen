@@ -224,6 +224,61 @@ acquisition_dashboard_stage_label <- function(kind) {
   ifelse(kind == "discover", "discovery", ifelse(kind == "migrate_storage", "storage_migration", "download"))
 }
 
+acquisition_dashboard_display_name <- function(name) {
+  explicit <- c(
+    source_ref_id = "Source ID",
+    native_project_id = "Portal project",
+    document_ref_id = "Document ID",
+    file_ref_id = "File ID",
+    job_id = "Job ID",
+    campaign_id = "Campaign ID",
+    target_ref_id = "Target ID",
+    queue_state = "Queue state",
+    energy_kind = "Category",
+    verification_status = "File status",
+    inventory_status = "Inventory status",
+    attempt_outcome = "Latest attempt",
+    last_error_category = "Error category",
+    last_error = "Error detail",
+    size_bytes = "Size",
+    known_bytes = "Known size",
+    verified_bytes = "Verified size",
+    observed_completed_bytes = "Observed completed size"
+  )
+  mapped <- unname(explicit[name])
+  if (!is.na(mapped)) {
+    return(mapped)
+  }
+  tools::toTitleCase(gsub("_", " ", name))
+}
+
+acquisition_dashboard_display_table <- function(data) {
+  data <- as.data.frame(data, stringsAsFactors = FALSE)
+  if (ncol(data) == 0L) {
+    return(data)
+  }
+  label_columns <- intersect(
+    c(
+      "state", "queue_state", "inventory_status", "verification_status", "attempt_outcome",
+      "latest_attempt_outcome",
+      "last_error_category", "stage", "kind", "target_type", "energy_kind"
+    ),
+    names(data)
+  )
+  for (column in label_columns) data[[column]] <- curation_app_display_label(data[[column]])
+  timestamp_columns <- names(data)[grepl("(^|_)at$", names(data))]
+  for (column in timestamp_columns) data[[column]] <- curation_app_format_datetime(data[[column]])
+  date_columns <- setdiff(names(data)[grepl("(^|_)date$", names(data))], timestamp_columns)
+  for (column in date_columns) data[[column]] <- curation_app_format_date(data[[column]])
+  size_columns <- intersect(
+    c("size_bytes", "known_bytes", "verified_bytes", "observed_completed_bytes", "completed_bytes", "latest_bytes"),
+    names(data)
+  )
+  for (column in size_columns) data[[column]] <- curation_app_format_size(data[[column]])
+  names(data) <- vapply(names(data), acquisition_dashboard_display_name, character(1))
+  data
+}
+
 acquisition_dashboard_stage_counts <- function(jobs) {
   if (inherits(jobs, "planscanR_acquisition_catalog")) {
     rows <- DBI::dbGetQuery(
@@ -643,54 +698,95 @@ acquisition_dashboard_ui <- function(id = NULL, preview = NULL) {
   }
   shiny::tagList(
     shiny::tags$div(
+      class = "acquisition-dashboard",
       id = ns("acquisition-dashboard"),
+      shiny::tags$style(htmltools::HTML(
+        ".acquisition-dashboard{max-width:100%;}",
+        ".acquisition-dashboard table{max-width:100%;}",
+        ".acquisition-dashboard .shiny-table{display:block;overflow-x:auto;}",
+        ".acquisition-dashboard details{margin:8px 0;}",
+        ".acquisition-dashboard summary{cursor:pointer;font-weight:600;padding:6px 0;}",
+        ".acquisition-dashboard .curation-help{display:inline-flex;position:relative;align-items:center;justify-content:center;",
+        "width:1.25rem;height:1.25rem;margin-left:.25rem;border:1px solid currentColor;border-radius:50%;",
+        "font-size:.8rem;font-weight:600;cursor:help;}",
+        ".acquisition-dashboard .curation-help:focus{outline:3px solid rgba(14,60,98,.35);outline-offset:2px;}",
+        ".acquisition-dashboard .curation-help-text{display:none;position:absolute;z-index:1080;top:calc(100% + .35rem);left:0;",
+        "width:18rem;padding:.55rem .7rem;border:1px solid #adb5bd;border-radius:.35rem;background:#fff;color:#212529;",
+        "font-size:.875rem;font-weight:400;line-height:1.35;box-shadow:0 .25rem .75rem rgba(0,0,0,.15);}",
+        ".acquisition-dashboard .curation-help:hover .curation-help-text,.acquisition-dashboard .curation-help:focus .curation-help-text{display:block;position:fixed;left:1rem;right:auto;top:auto;bottom:1rem;width:18rem;max-width:calc(100vw - 2rem);}",
+        "@media (max-width:576px){.acquisition-dashboard .curation-help-text{position:fixed;left:1rem;right:1rem;top:auto;bottom:1rem;width:auto;}}"
+      )),
       campaign_panel,
       shiny::h2("Acquisition dashboard"),
       shiny::textOutput(ns("dashboard-actor")),
       shiny::tags$div(
         id = ns("dashboard-summary"),
-        shiny::h3("Progress"),
+        shiny::h3("Progress", curation_app_help(
+          "Progress summary",
+          "Counts are read from the acquisition catalog. Unknown totals stay unknown until the relevant worker records them."
+        )),
         shiny::tableOutput(ns("dashboard-progress")),
         shiny::h3("Projects by country and energy"),
         shiny::tableOutput(ns("dashboard-project-counts")),
         shiny::h3("Files"),
         shiny::tableOutput(ns("dashboard-file-counts")),
-        shiny::h3("Queue stages"),
-        shiny::tableOutput(ns("dashboard-stage-counts")),
-        shiny::h3("Active workers and heartbeats"),
-        shiny::tableOutput(ns("dashboard-workers")),
-        shiny::h3("Unknown or error totals"),
-        shiny::tableOutput(ns("dashboard-unknown"))
+        shiny::tags$details(
+          shiny::tags$summary("Diagnostics and unknown totals"),
+          shiny::h3("Queue stages"),
+          shiny::tableOutput(ns("dashboard-stage-counts")),
+          shiny::h3("Active workers and heartbeats"),
+          shiny::tableOutput(ns("dashboard-workers")),
+          shiny::h3("Unknown or error totals"),
+          shiny::tableOutput(ns("dashboard-unknown"))
+        )
       ),
       shiny::tags$div(
         id = ns("dashboard-queue-panel"),
         shiny::h3("Queue"),
-        shiny::tags$div(
-          id = ns("dashboard-queue-filters"),
-          shiny::textInput(ns("dashboard-filter-campaign"), "Campaign", value = ""),
-          shiny::textInput(ns("dashboard-filter-country"), "Country", value = ""),
-          shiny::textInput(ns("dashboard-filter-energy"), "Energy", value = ""),
-          shiny::selectInput(
-            ns("dashboard-filter-state"),
-            "State",
-            choices = c("All" = "", "queued", "running", "retry_wait", "blocked", "succeeded", "failed", "cancelled")
+        shiny::tags$details(
+          shiny::tags$summary(
+            "Advanced queue filters",
+            curation_app_help(
+              "Queue filters",
+              "Filters only change the displayed queue page. They do not pause, retry, cancel, or start work."
+            )
           ),
-          shiny::textInput(ns("dashboard-filter-portal"), "Portal", value = ""),
-          shiny::textInput(ns("dashboard-filter-search"), "Search", value = ""),
-          shiny::numericInput(ns("dashboard-page"), "Queue page", value = 1L, min = 1L, step = 1L),
-          shiny::numericInput(ns("dashboard-page-size"), "Rows per page", value = 50L, min = 1L, max = 500L, step = 1L),
-          shiny::actionButton(ns("dashboard-page-prev"), "Previous page"),
-          shiny::actionButton(ns("dashboard-page-next"), "Next page"),
-          shiny::textOutput(ns("dashboard-page-info"))
+          shiny::tags$div(
+            id = ns("dashboard-queue-filters"),
+            shiny::textInput(ns("dashboard-filter-campaign"), "Campaign", value = ""),
+            shiny::textInput(ns("dashboard-filter-country"), "Country", value = ""),
+            shiny::textInput(ns("dashboard-filter-energy"), "Category", value = ""),
+            shiny::selectInput(
+              ns("dashboard-filter-state"),
+              "Queue state",
+              choices = c("All states" = "", "Queued" = "queued", "Running" = "running", "Waiting to retry" = "retry_wait", "Blocked" = "blocked", "Succeeded" = "succeeded", "Failed" = "failed", "Cancelled" = "cancelled")
+            ),
+            shiny::textInput(ns("dashboard-filter-portal"), "Portal", value = ""),
+            shiny::textInput(ns("dashboard-filter-search"), "Search IDs", value = ""),
+            shiny::numericInput(ns("dashboard-page"), "Queue page", value = 1L, min = 1L, step = 1L),
+            shiny::numericInput(ns("dashboard-page-size"), "Rows per page", value = 50L, min = 1L, max = 500L, step = 1L),
+            shiny::actionButton(ns("dashboard-page-prev"), "Previous page"),
+            shiny::actionButton(ns("dashboard-page-next"), "Next page"),
+            shiny::textOutput(ns("dashboard-page-info"))
+          )
         ),
         shiny::tableOutput(ns("dashboard-queue")),
-        shiny::h3("Administrator controls"),
-        shiny::selectInput(ns("dashboard-action"), "Action", choices = c("pause", "resume", "retry", "cancel")),
-        shiny::selectInput(ns("dashboard-target-type"), "Target type", choices = c("job", "campaign")),
-        shiny::selectInput(ns("dashboard-target-id"), "Target", choices = character(0)),
-        shiny::textInput(ns("dashboard-reason"), "Reason"),
-        shiny::actionButton(ns("dashboard-apply"), "Apply control"),
-        shiny::textOutput(ns("dashboard-action-result"))
+        shiny::tags$details(
+          shiny::tags$summary("Administrator controls"),
+          shiny::p("These controls affect the selected queued target and require administrator access. The reason is written to the audit trail."),
+          shiny::selectInput(ns("dashboard-action"), "Action", choices = c("Pause" = "pause", "Resume" = "resume", "Retry" = "retry", "Cancel" = "cancel")),
+          shiny::selectInput(ns("dashboard-target-type"), "Target type", choices = c("Job" = "job", "Campaign" = "campaign")),
+          shiny::selectInput(ns("dashboard-target-id"), "Target", choices = character(0)),
+          shiny::textInput(ns("dashboard-reason"), "Reason"),
+          shiny::div(
+            shiny::actionButton(ns("dashboard-apply"), "Apply control"),
+            curation_app_help(
+              "Apply control",
+              "This records the selected administrator action for the selected job or campaign. Check the audit result next."
+            )
+          ),
+          shiny::textOutput(ns("dashboard-action-result"))
+        )
       )
     )
   )
@@ -890,7 +986,7 @@ acquisition_dashboard_server <- function(
           return(data.frame(status = "error", message = conditionMessage(current_summary), stringsAsFactors = FALSE))
         }
         progress <- current_summary$progress
-        as.data.frame(progress, stringsAsFactors = FALSE)
+        acquisition_dashboard_display_table(as.data.frame(progress, stringsAsFactors = FALSE))
       },
       rownames = TRUE
     )
@@ -900,7 +996,7 @@ acquisition_dashboard_server <- function(
         if (is.null(value) || inherits(value, "error")) {
           return(data.frame())
         }
-        value$project_counts
+        acquisition_dashboard_display_table(value$project_counts)
       },
       striped = TRUE
     )
@@ -910,7 +1006,7 @@ acquisition_dashboard_server <- function(
         if (is.null(value) || inherits(value, "error")) {
           return(data.frame())
         }
-        value$file_counts
+        acquisition_dashboard_display_table(value$file_counts)
       },
       striped = TRUE
     )
@@ -920,7 +1016,7 @@ acquisition_dashboard_server <- function(
         if (is.null(value) || inherits(value, "error")) {
           return(data.frame())
         }
-        value$stage_counts
+        acquisition_dashboard_display_table(value$stage_counts)
       },
       striped = TRUE
     )
@@ -930,7 +1026,7 @@ acquisition_dashboard_server <- function(
         if (is.null(value) || inherits(value, "error")) {
           return(data.frame())
         }
-        value$workers
+        acquisition_dashboard_display_table(value$workers)
       },
       striped = TRUE
     )
@@ -941,11 +1037,14 @@ acquisition_dashboard_server <- function(
           return(data.frame())
         }
         totals <- value$unknown_totals
-        as.data.frame(totals, stringsAsFactors = FALSE)
+        acquisition_dashboard_display_table(as.data.frame(totals, stringsAsFactors = FALSE))
       },
       rownames = TRUE
     )
-    output$`dashboard-queue` <- shiny::renderTable(queue(), striped = TRUE)
+    output$`dashboard-queue` <- shiny::renderTable(
+      acquisition_dashboard_display_table(queue()),
+      striped = TRUE
+    )
     output$`dashboard-page-info` <- shiny::renderText({
       rows <- queue()
       total <- as.integer(attr(rows, "total_count") %||% 0L)
