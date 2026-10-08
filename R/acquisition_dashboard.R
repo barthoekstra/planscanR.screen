@@ -242,8 +242,17 @@ acquisition_dashboard_display_name <- function(name) {
     last_error = "Error detail",
     size_bytes = "Size",
     known_bytes = "Known size",
-    verified_bytes = "Verified size",
-    observed_completed_bytes = "Observed completed size"
+    verified_bytes = "Verified bytes",
+    observed_completed_bytes = "Observed completed size",
+    running_jobs = "Running jobs",
+    retry_jobs = "Retrying jobs",
+    blocked_jobs = "Blocked jobs",
+    failed_jobs = "Failed jobs",
+    cancelled_jobs = "Cancelled jobs",
+    verified_file_count = "Verified files",
+    verified_observed_at = "Verified bytes observed at",
+    latest_success_at = "Latest successful completion",
+    latest_download_success_at = "Latest successful download"
   )
   mapped <- unname(explicit[name])
   if (!is.na(mapped)) {
@@ -343,6 +352,12 @@ acquisition_dashboard_progress <- function(catalog) {
     }
     if (numeric) value else as.integer(value)
   }
+  scalar_or_text <- function(value) {
+    if (length(value) == 0L || is.na(value[[1L]]) || !nzchar(as.character(value[[1L]]))) {
+      return(NA_character_)
+    }
+    as.character(value[[1L]])
+  }
   jobs <- DBI::dbGetQuery(
     conn,
     paste(
@@ -350,15 +365,29 @@ acquisition_dashboard_progress <- function(catalog) {
       "SUM(CASE WHEN state = 'succeeded' THEN 1 ELSE 0 END) AS succeeded_jobs,",
       "SUM(CASE WHEN state = 'running' THEN 1 ELSE 0 END) AS running_jobs,",
       "SUM(CASE WHEN state IN ('queued', 'retry_wait') THEN 1 ELSE 0 END) AS pending_jobs,",
-      "SUM(CASE WHEN state IN ('failed', 'blocked', 'cancelled') THEN 1 ELSE 0 END) AS failed_jobs",
+      "SUM(CASE WHEN state = 'retry_wait' THEN 1 ELSE 0 END) AS retry_jobs,",
+      "SUM(CASE WHEN state = 'blocked' THEN 1 ELSE 0 END) AS blocked_jobs,",
+      "SUM(CASE WHEN state = 'failed' THEN 1 ELSE 0 END) AS failed_jobs,",
+      "SUM(CASE WHEN state = 'cancelled' THEN 1 ELSE 0 END) AS cancelled_jobs",
       "FROM acquisition_jobs"
+    )
+  )
+  completion <- DBI::dbGetQuery(
+    conn,
+    paste(
+      "SELECT",
+      "(SELECT MAX(finished_at) FROM acquisition_job_attempts WHERE outcome = 'succeeded') AS latest_success_at,",
+      "(SELECT MAX(a.finished_at) FROM acquisition_job_attempts a JOIN acquisition_jobs j ON j.job_id = a.job_id",
+      "WHERE a.outcome = 'succeeded' AND j.kind = 'download') AS latest_download_success_at"
     )
   )
   files <- DBI::dbGetQuery(
     conn,
     paste(
-      "SELECT COALESCE(SUM(CASE WHEN f.verification_status = 'verified' AND f.size_bytes IS NOT NULL THEN f.size_bytes ELSE 0 END), 0) AS verified_bytes,",
-      "SUM(CASE WHEN f.verification_status = 'verified' AND f.size_bytes IS NULL THEN 1 ELSE 0 END) AS unknown_file_bytes",
+      "SELECT SUM(CASE WHEN f.verification_status = 'verified' THEN 1 ELSE 0 END) AS verified_file_count,",
+      "COALESCE(SUM(CASE WHEN f.verification_status = 'verified' AND f.size_bytes IS NOT NULL THEN f.size_bytes ELSE 0 END), 0) AS verified_bytes,",
+      "SUM(CASE WHEN f.verification_status = 'verified' AND f.size_bytes IS NULL THEN 1 ELSE 0 END) AS unknown_file_bytes,",
+      "MAX(CASE WHEN f.verification_status = 'verified' THEN f.observed_at END) AS verified_observed_at",
       "FROM acquisition_files f"
     )
   )
@@ -366,27 +395,113 @@ acquisition_dashboard_progress <- function(catalog) {
   succeeded <- scalar_or_zero(jobs$succeeded_jobs)
   running <- scalar_or_zero(jobs$running_jobs)
   pending <- scalar_or_zero(jobs$pending_jobs)
+  retry <- scalar_or_zero(jobs$retry_jobs)
+  blocked <- scalar_or_zero(jobs$blocked_jobs)
   failed <- scalar_or_zero(jobs$failed_jobs)
-  completed <- succeeded + failed
+  cancelled <- scalar_or_zero(jobs$cancelled_jobs)
+  completed <- succeeded + blocked + failed + cancelled
+  verified_file_count <- scalar_or_zero(files$verified_file_count)
   list(
     total_jobs = total,
     completed_jobs = completed,
     succeeded_jobs = succeeded,
     running_jobs = running,
     pending_jobs = pending,
+    retry_jobs = retry,
+    blocked_jobs = blocked,
     failed_jobs = failed,
+    cancelled_jobs = cancelled,
     completion_fraction = if (total == 0L) NA_real_ else completed / total,
+    latest_success_at = scalar_or_text(completion$latest_success_at),
+    latest_download_success_at = scalar_or_text(completion$latest_download_success_at),
+    verified_file_count = verified_file_count,
     verified_bytes = scalar_or_zero(files$verified_bytes, numeric = TRUE),
     unknown_file_bytes = scalar_or_zero(files$unknown_file_bytes),
+    verified_observed_at = scalar_or_text(files$verified_observed_at),
     unknown_projects = NA_integer_
   )
 }
 
-acquisition_dashboard_poll_token <- function(catalog) {
-  # The bounded reactivePoll interval is the refresh clock.  The token changes
-  # only when a persisted acquisition timestamp changes, so an inactive tab can
-  # stay quiet and an active tab does not rebuild its summary on every timer
-  # tick.  Each branch returns one scalar; attempt history is never fetched.
+acquisition_dashboard_execution_health <- function(worker_health, progress) {
+  counts <- worker_health$counts
+  expected <- suppressWarnings(as.integer(counts[["expected"]] %||% 0L))
+  alive <- suppressWarnings(as.integer(counts[["alive"]] %||% 0L))
+  available <- suppressWarnings(as.integer(counts[["available"]] %||% 0L))
+  if (length(expected) != 1L || is.na(expected)) expected <- 0L
+  if (length(alive) != 1L || is.na(alive)) alive <- 0L
+  if (length(available) != 1L || is.na(available)) available <- 0L
+  workers <- worker_health$workers
+  states <- if (nrow(workers) == 0L) character(0) else as.character(workers$state)
+  status <- if (expected == 0L) {
+    "unknown"
+  } else if (any(states == "error")) {
+    "error"
+  } else if (any(states == "stale") && alive == 0L) {
+    "stale"
+  } else if (any(states == "unknown") && alive == 0L) {
+    "unknown"
+  } else if (alive == 0L && all(states %in% c("stopped", "error"))) {
+    "offline"
+  } else if (any(states == "busy")) {
+    "busy"
+  } else {
+    "idle"
+  }
+  pending <- suppressWarnings(as.integer(progress$pending_jobs %||% 0L))
+  running <- suppressWarnings(as.integer(progress$running_jobs %||% 0L))
+  if (length(pending) != 1L || is.na(pending)) pending <- 0L
+  if (length(running) != 1L || is.na(running)) running <- 0L
+  queue_acknowledgement <- if (pending > 0L) {
+    activity <- if (running > 0L) {
+      paste0(running, " job(s) currently running.")
+    } else {
+      "No job is currently running."
+    }
+    paste0(
+      pending,
+      " pending job(s) persisted in the queue. ",
+      activity,
+      " Queue persistence acknowledges storage only; completion requires a verified file receipt."
+    )
+  } else {
+    "No pending jobs are currently persisted in the queue."
+  }
+  pending_warning <- NULL
+  if (pending > 0L && available == 0L) {
+    reason <- if (expected == 0L) {
+      "no expected workers are configured, so execution health is unknown"
+    } else if (status == "busy" && all(states == "busy")) {
+      "all expected workers are busy"
+    } else if (status == "stale") {
+      "expected worker heartbeats are stale"
+    } else if (status == "offline") {
+      "the expected worker pool is offline"
+    } else if (status == "error") {
+      "an expected worker reports an error"
+    } else {
+      "no expected worker is currently available"
+    }
+    pending_warning <- paste0(
+      "action required: pending work is persisted, but no available worker is reported: ",
+      reason,
+      ". Inspect the supervised worker pool before expecting processing."
+    )
+  }
+  list(
+    status = status,
+    counts = c(expected = expected, alive = alive, available = available),
+    workers = workers,
+    as_of = worker_health$as_of,
+    queue_acknowledgement = queue_acknowledgement,
+    pending_warning = pending_warning
+  )
+}
+
+acquisition_dashboard_poll_token <- function(catalog, now = Sys.time()) {
+  # The bounded reactivePoll interval is the refresh clock. The persisted
+  # timestamp token catches writes; a small time bucket also lets a crashed
+  # worker become stale without requiring another database write. Each branch
+  # returns one scalar; attempt history is never fetched.
   if (is.null(catalog)) {
     return("inactive")
   }
@@ -403,12 +518,15 @@ acquisition_dashboard_poll_token <- function(catalog) {
       "UNION ALL SELECT MAX(created_at) FROM acquisition_sources",
       "UNION ALL SELECT MAX(created_at) FROM acquisition_documents",
       "UNION ALL SELECT MAX(observed_at) FROM acquisition_files",
+      "UNION ALL SELECT MAX(updated_at) FROM acquisition_worker_health",
       ") AS acquisition_changes"
     )
   )
   token <- token_row$token[[1L]]
   token <- as.character(token %||% "")
-  if (length(token) == 0L || is.na(token)) "" else token
+  if (length(token) == 0L || is.na(token)) token <- ""
+  expiry_bucket <- floor(as.numeric(now) / 10)
+  paste(token, expiry_bucket, sep = "|")
 }
 
 #' Return database-derived acquisition status, progress, and heartbeat data.
@@ -443,6 +561,8 @@ acquisition_dashboard_summary <- function(
   unknown_bytes <- sum(file_counts$unknown_bytes)
   progress <- acquisition_dashboard_progress(catalog)
   progress$unknown_projects <- as.integer(unknown_projects)
+  worker_health <- acquisition_worker_health_status(catalog)
+  execution_health <- acquisition_dashboard_execution_health(worker_health, progress)
   list(
     refreshed_at = acquisition_catalog_now(),
     projects = projects,
@@ -454,6 +574,10 @@ acquisition_dashboard_summary <- function(
     ingestion = acquisition_dashboard_ingestion_metrics(catalog),
     jobs = jobs,
     workers = acquisition_dashboard_workers(catalog),
+    worker_health = worker_health,
+    execution_health = execution_health,
+    queue_acknowledgement = execution_health$queue_acknowledgement,
+    pending_warning = execution_health$pending_warning,
     progress = progress,
     unknown_totals = list(
       projects = as.integer(unknown_projects),
@@ -858,6 +982,8 @@ acquisition_dashboard_ui <- function(id = NULL, preview = NULL, storage_context 
         "width:18rem;padding:.55rem .7rem;border:1px solid #adb5bd;border-radius:.35rem;background:#fff;color:#212529;",
         "font-size:.875rem;font-weight:400;line-height:1.35;box-shadow:0 .25rem .75rem rgba(0,0,0,.15);}",
         ".acquisition-dashboard .curation-help:hover .curation-help-text,.acquisition-dashboard .curation-help:focus .curation-help-text{display:block;position:fixed;left:1rem;right:auto;top:auto;bottom:1rem;width:18rem;max-width:calc(100vw - 2rem);}",
+        ".acquisition-dashboard .execution-health{border:1px solid #adb5bd;border-left:4px solid #0e3c62;padding:.7rem .85rem;margin:.5rem 0 1rem;background:#f8f9fa;}",
+        ".acquisition-dashboard .execution-health-warning{border-left-color:#b45309;background:#fff8eb;padding:.6rem .75rem;margin:.5rem 0;}",
         "@media (max-width:576px){.acquisition-dashboard .curation-help-text{position:fixed;left:1rem;right:1rem;top:auto;bottom:1rem;width:auto;}}"
       )),
       campaign_panel,
@@ -866,10 +992,24 @@ acquisition_dashboard_ui <- function(id = NULL, preview = NULL, storage_context 
       shiny::textOutput(ns("dashboard-actor")),
       shiny::tags$div(
         id = ns("dashboard-summary"),
+        shiny::tags$div(
+          id = ns("dashboard-execution-health"),
+          class = "execution-health",
+          shiny::h3("Execution health", curation_app_help(
+            "Execution health",
+            "Worker lifecycle health is independent of queue attempts. A worker heartbeat shows recent worker activity; verified files and bytes come from completed downloads."
+          )),
+          shiny::textOutput(ns("dashboard-health-status")),
+          shiny::textOutput(ns("dashboard-health-detail")),
+          shiny::uiOutput(ns("dashboard-pending-warning")),
+          shiny::textOutput(ns("dashboard-queue-acknowledgement")),
+          shiny::tableOutput(ns("dashboard-worker-health"))
+        ),
         shiny::h3("Monitor progress", curation_app_help(
           "Progress summary",
           "Queued work is processed by independent workers. Counts are read from the acquisition catalog; unknown totals stay unknown until the relevant worker records them."
         )),
+        shiny::p("Verified file count, verified bytes, and latest successful completion are read from durable receipts; unknown document totals stay unknown."),
         shiny::tableOutput(ns("dashboard-progress")),
         shiny::h3("Projects by country and energy"),
         shiny::tableOutput(ns("dashboard-project-counts")),
@@ -1155,6 +1295,75 @@ acquisition_dashboard_server <- function(
         page_size = queue_page_size()
       )
     })
+    output$`dashboard-health-status` <- shiny::renderText({
+      current_summary <- summary()
+      if (is.null(current_summary)) {
+        return("Execution health is unavailable until the dashboard is active.")
+      }
+      if (inherits(current_summary, "error")) {
+        return(paste("Execution health is unavailable:", conditionMessage(current_summary)))
+      }
+      health <- current_summary$execution_health
+      counts <- health$counts
+      paste0(
+        "Status: ",
+        tools::toTitleCase(as.character(health$status)),
+        " — expected ",
+        as.integer(counts[["expected"]]),
+        ", alive ",
+        as.integer(counts[["alive"]]),
+        ", available ",
+        as.integer(counts[["available"]])
+      )
+    })
+    output$`dashboard-health-detail` <- shiny::renderText({
+      current_summary <- summary()
+      if (is.null(current_summary) || inherits(current_summary, "error")) {
+        return("")
+      }
+      paste(
+        "Observed at",
+        current_summary$execution_health$as_of %||% "unknown",
+        ". A worker heartbeat shows recent worker activity; verified files and bytes come from completed downloads."
+      )
+    })
+    output$`dashboard-pending-warning` <- shiny::renderUI({
+      current_summary <- summary()
+      warning <- if (is.null(current_summary) || inherits(current_summary, "error")) {
+        NULL
+      } else {
+        current_summary$pending_warning
+      }
+      if (is.null(warning) || !nzchar(as.character(warning))) {
+        return(NULL)
+      }
+      shiny::tags$div(
+        class = "execution-health-warning",
+        role = "alert",
+        shiny::strong("Action required: "),
+        as.character(warning)
+      )
+    })
+    output$`dashboard-queue-acknowledgement` <- shiny::renderText({
+      current_summary <- summary()
+      if (is.null(current_summary)) {
+        return("")
+      }
+      if (inherits(current_summary, "error")) {
+        return("Queue acknowledgement is unavailable while the catalog is being read.")
+      }
+      paste("Queue acknowledgement:", current_summary$queue_acknowledgement)
+    })
+    output$`dashboard-worker-health` <- shiny::renderTable(
+      {
+        current_summary <- summary()
+        if (is.null(current_summary) || inherits(current_summary, "error")) {
+          return(data.frame())
+        }
+        acquisition_dashboard_display_table(current_summary$worker_health$workers)
+      },
+      striped = TRUE
+    )
     output$`dashboard-progress` <- shiny::renderTable(
       {
         current_summary <- summary()
@@ -1165,6 +1374,7 @@ acquisition_dashboard_server <- function(
           return(data.frame(status = "error", message = conditionMessage(current_summary), stringsAsFactors = FALSE))
         }
         progress <- current_summary$progress
+        progress$completion_fraction <- NULL
         acquisition_dashboard_display_table(as.data.frame(progress, stringsAsFactors = FALSE))
       },
       rownames = TRUE
