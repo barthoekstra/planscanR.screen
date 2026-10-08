@@ -678,6 +678,18 @@ acquisition_campaign_panel_preview_args <- function(preview) {
   preview
 }
 
+acquisition_campaign_panel_is_active <- function(active, isolate = FALSE) {
+  if (is.null(active)) {
+    return(TRUE)
+  }
+  value <- if (is.function(active)) {
+    if (isTRUE(isolate)) shiny::isolate(active()) else active()
+  } else {
+    active
+  }
+  isTRUE(value)
+}
+
 acquisition_campaign_preview_items_page <- function(
   preview,
   search = NULL,
@@ -743,6 +755,8 @@ acquisition_campaign_panel_ui <- function(id = NULL) {
 #' @param actor_resolver Trusted actor resolver.
 #' @param request Optional request context.
 #' @param submit_fn Optional policy adapter; defaults to the generic authenticated submitter.
+#' @param active Optional function or reactive value indicating whether the
+#'   Acquisition tab is active. Standalone panels are active by default.
 #' @return Invisibly, `NULL`.
 #' @export
 acquisition_campaign_panel_server <- function(
@@ -751,13 +765,16 @@ acquisition_campaign_panel_server <- function(
   preview,
   actor_resolver,
   request = list(),
-  submit_fn = acquisition_campaign_submit_authenticated
+  submit_fn = acquisition_campaign_submit_authenticated,
+  active = NULL
 ) {
   acquisition_dashboard_require_ui()
   acquisition_catalog_connection(catalog)
   acquisition_controls_check_resolver(actor_resolver)
   if (!is.function(submit_fn)) acquisition_campaign_abort("{.arg submit_fn} must be a function.")
   shiny::moduleServer(id, function(input, output, session) {
+    preview_cache <- shiny::reactiveVal(NULL)
+    preview_args_cache <- shiny::reactiveVal(NULL)
     args <- shiny::reactive({
       resolved <- acquisition_campaign_panel_preview_args(preview)
       if (is.null(resolved)) {
@@ -787,11 +804,20 @@ acquisition_campaign_panel_server <- function(
       resolved
     })
     current_preview <- shiny::reactive({
+      if (!acquisition_campaign_panel_is_active(active)) {
+        return(preview_cache())
+      }
       resolved <- args()
       if (is.null(resolved)) {
         return(NULL)
       }
-      tryCatch(do.call(acquisition_campaign_preview, c(list(catalog = catalog), resolved)), error = identity)
+      if (identical(preview_args_cache(), resolved)) {
+        return(preview_cache())
+      }
+      value <- tryCatch(do.call(acquisition_campaign_preview, c(list(catalog = catalog), resolved)), error = identity)
+      preview_args_cache(resolved)
+      preview_cache(value)
+      value
     })
     campaign_page <- shiny::reactiveVal(1L)
     campaign_page_size <- shiny::reactive({
@@ -830,6 +856,9 @@ acquisition_campaign_panel_server <- function(
       sprintf("Page %d of %d (%d items)", attr(rows, "page"), attr(rows, "page_count"), attr(rows, "total_count"))
     })
     output$`campaign-status` <- shiny::renderUI({
+      if (!acquisition_campaign_panel_is_active(active)) {
+        return(shiny::helpText("Acquisition preview is paused while the Acquisition tab is inactive."))
+      }
       value <- current_preview()
       if (is.null(value)) {
         return(shiny::helpText("Acquisition preview is unavailable until a model and policy are supplied."))
@@ -873,6 +902,10 @@ acquisition_campaign_panel_server <- function(
     })
     shiny::observeEvent(input$`campaign-submit`,
       {
+        if (!acquisition_campaign_panel_is_active(active)) {
+          output$`campaign-submit-result` <- shiny::renderText("Campaign submission is unavailable while the Acquisition tab is inactive.")
+          return()
+        }
         resolved <- args()
         if (is.null(resolved)) {
           output$`campaign-submit-result` <- shiny::renderText("Campaign submission is unavailable.")

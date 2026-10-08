@@ -1990,6 +1990,17 @@ curation_app_read_snapshot <- function(store, scope, actor, version = NULL) {
   )
 }
 
+curation_app_snapshot_record_fingerprint <- function(snapshot_info) {
+  if (!is.list(snapshot_info) || !is.data.frame(snapshot_info$records)) {
+    return(NULL)
+  }
+  metadata <- snapshot_info$metadata
+  if (is.list(metadata) && !is.null(metadata$prepared_record_fingerprint)) {
+    return(as.character(metadata$prepared_record_fingerprint))
+  }
+  curation_artifact_content_fingerprint(snapshot_info$records)
+}
+
 curation_app_snapshot_config_matches <- function(snapshot_info, config) {
   metadata <- snapshot_info$metadata
   if (!is.list(metadata) || is.null(metadata$config_fingerprint)) {
@@ -2435,6 +2446,13 @@ curation_app_server <- function(input, output, session, context) {
   snapshot_id <- shiny::reactiveVal(snapshot_info$id)
   snapshot_revision <- shiny::reactiveVal(snapshot_info$revision)
   snapshot_version <- shiny::reactiveVal(snapshot_info$version)
+  # The prepared snapshot fingerprint is immutable for the session and is
+  # refreshed only when the explicit Rebuild snapshot action publishes a new
+  # record frame. Preview reruns reuse this value instead of hashing the whole
+  # corpus on every threshold or tab-related invalidation.
+  snapshot_fingerprint <- shiny::reactiveVal(
+    curation_app_snapshot_record_fingerprint(snapshot_info)
+  )
   reviews <- shiny::reactiveVal(tryCatch(
     curation_app_read_reviews(repository, scope, actor),
     error = function(e) {
@@ -2621,6 +2639,7 @@ curation_app_server <- function(input, output, session, context) {
         revision = snapshot_revision(),
         metadata = metadata
       )
+      snapshot_fingerprint(curation_app_snapshot_record_fingerprint(app_state$snapshot))
       shiny::showNotification("The current snapshot is already persisted.", type = "message")
       return()
     }
@@ -2637,6 +2656,7 @@ curation_app_server <- function(input, output, session, context) {
       snapshot_version(existing$version)
       snapshot_revision(existing$revision)
       app_state$snapshot <- existing
+      snapshot_fingerprint(curation_app_snapshot_record_fingerprint(existing))
       shiny::showNotification("Snapshot refreshed from the persisted artifact.", type = "message")
       return()
     }
@@ -2668,6 +2688,7 @@ curation_app_server <- function(input, output, session, context) {
       revision = as.integer(written$revision %||% snapshot_revision()),
       metadata = metadata
     )
+    snapshot_fingerprint(curation_app_snapshot_record_fingerprint(app_state$snapshot))
     shiny::showNotification("Snapshot refreshed through the injected artifact store.", type = "message")
   })
 
@@ -2705,7 +2726,10 @@ curation_app_server <- function(input, output, session, context) {
     replace_if_configured("nonrenewable_score", input$nonrenewable_score)
     controls
   })
-  model_scored <- shiny::reactive({
+  # Keep model probabilities independent from the UI cutoff.  Moving the
+  # threshold only updates a logical vector over this cached prediction frame;
+  # it must not refit or call the workflow again.
+  model_probabilities <- shiny::reactive({
     data <- records()
     fitted <- model()
     if (is.null(fitted)) {
@@ -2714,13 +2738,19 @@ curation_app_server <- function(input, output, session, context) {
       return(data)
     }
     tryCatch(
-      curation_predict_model(fitted, data, config, threshold = input$model_threshold %||% 0.5),
+      curation_predict_model(fitted, data, config, threshold = fitted$threshold %||% 0.5),
       error = function(e) {
         shiny::showNotification(paste0("Model prediction failed: ", conditionMessage(e)), type = "warning")
         data$select_prob <- rep(NA_real_, nrow(data))
         data$selected_model <- rep(FALSE, nrow(data))
         data
       }
+    )
+  })
+  model_scored <- shiny::reactive({
+    curation_apply_model_threshold(
+      model_probabilities(),
+      threshold = input$model_threshold %||% 0.5
     )
   })
   selected_records <- shiny::reactive({
@@ -2746,7 +2776,7 @@ curation_app_server <- function(input, output, session, context) {
         priority_rules = priority_rules,
         records_snapshot_id = snapshot_id(),
         records_snapshot_version = snapshot_version(),
-        records_snapshot_fingerprint = curation_artifact_content_fingerprint(records())
+        records_snapshot_fingerprint = snapshot_fingerprint()
       )
     })
   } else {
@@ -2764,6 +2794,10 @@ curation_app_server <- function(input, output, session, context) {
         actor_probe = acquisition_actor_probe,
         preview = acquisition$preview %||% acquisition_preview %||% NULL,
         submit_fn = acquisition$campaign_submit_fn %||% acquisition_campaign_submit_authenticated,
+        active = shiny::reactive({
+          nav <- input$nav
+          is.null(nav) || identical(nav, "Acquisition")
+        }),
         refresh_ms = acquisition$refresh_ms %||% 2000L,
         page_size = acquisition$page_size %||% 50L
       ),

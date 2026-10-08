@@ -212,8 +212,7 @@ consensus_reviews <- function(reviews, decisions = c("keep", "drop")) {
   # 1. each reviewer's most-recent verdict per record.
   d <- d[order(d$.ra, decreasing = TRUE), , drop = FALSE]
   per_reviewer <- d[
-    !duplicated(paste(d$country, d$document_id, d$.reviewer)),
-    ,
+    !duplicated(paste(d$country, d$document_id, d$.reviewer)), ,
     drop = FALSE
   ]
 
@@ -656,6 +655,27 @@ selection_cv_metrics <- function(model, threshold = NULL, by_country = FALSE) {
   selection_metrics_from_oof_by_country(oof, threshold = thr)
 }
 
+# Compute learned keep probabilities without applying a decision cutoff.  The
+# curation app can then move a threshold over this stable vector without
+# invoking the model workflow again.
+predict_selection_probabilities <- function(model, records) {
+  if (!inherits(model, "planscanR_selection_model")) {
+    cli::cli_abort("{.arg model} must be a planscanR_selection_model.")
+  }
+  require_tidymodels()
+  if (nrow(records) == 0L) {
+    records$select_prob <- numeric(0)
+    return(records)
+  }
+  feats <- selection_features(
+    records, model$topics, model$labels,
+    include = model$include
+  )
+  p <- stats::predict(model$workflow, new_data = feats, type = "prob")
+  records$select_prob <- p[[".pred_keep"]]
+  records
+}
+
 #' Predict the learned selection decision for records.
 #'
 #' Adds two columns: `select_prob` (the model's P(keep)) and `selected_model`
@@ -676,19 +696,8 @@ predict_selection <- function(model, records, threshold = NULL) {
   if (!inherits(model, "planscanR_selection_model")) {
     cli::cli_abort("{.arg model} must be a planscanR_selection_model.")
   }
-  require_tidymodels()
   thr <- threshold %||% model$threshold
-  if (nrow(records) == 0L) {
-    records$select_prob <- numeric(0)
-    records$selected_model <- logical(0)
-    return(records)
-  }
-  feats <- selection_features(
-    records, model$topics, model$labels,
-    include = model$include
-  )
-  p <- stats::predict(model$workflow, new_data = feats, type = "prob")
-  records$select_prob <- p[[".pred_keep"]]
+  records <- predict_selection_probabilities(model, records)
   records$selected_model <- records$select_prob >= thr
   records
 }
