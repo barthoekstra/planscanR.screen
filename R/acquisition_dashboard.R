@@ -467,7 +467,7 @@ acquisition_dashboard_execution_health <- function(worker_health, progress) {
     "No pending jobs are currently persisted in the queue."
   }
   pending_warning <- NULL
-  if (pending > 0L && available == 0L) {
+  if (pending > 0L && !any(states %in% c("idle", "busy"), na.rm = TRUE)) {
     reason <- if (expected == 0L) {
       "no expected workers are configured, so execution health is unknown"
     } else if (status == "busy" && all(states == "busy")) {

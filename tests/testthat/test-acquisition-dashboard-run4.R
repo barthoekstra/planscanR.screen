@@ -18,7 +18,14 @@ testthat::test_that("dashboard reports independent execution health and verified
     native_attachment_id = "run4-document",
     attachment_url = "https://fixture.example/run4.pdf"
   )
+  pending_document <- acquisition_catalog_register_document(
+    catalog,
+    source$source_ref_id,
+    native_attachment_id = "run4-pending-document",
+    attachment_url = "https://fixture.example/run4-pending.pdf"
+  )
   acquisition_queue_enqueue(catalog, "download", "document", document$document_ref_id)
+  acquisition_queue_enqueue(catalog, "download", "document", pending_document$document_ref_id)
   acquisition_worker_health_configure(catalog, "worker-1")
   acquisition_worker_health_start(catalog, "worker-1")
 
@@ -28,13 +35,14 @@ testthat::test_that("dashboard reports independent execution health and verified
   testthat::expect_true(grepl("persisted", idle$queue_acknowledgement, fixed = TRUE))
   testthat::expect_null(idle$pending_warning)
 
+  claim <- acquisition_queue_claim(catalog, "worker-1")
+  testthat::expect_true(claim$ok)
   acquisition_worker_health_stop(catalog, "worker-1")
   stopped <- acquisition_dashboard_summary(catalog)
   testthat::expect_identical(stopped$execution_health$status, "offline")
   testthat::expect_match(stopped$pending_warning, "no available worker")
   testthat::expect_match(stopped$pending_warning, "action")
 
-  claim <- acquisition_queue_claim(catalog, "worker-1")
   completed <- acquisition_queue_complete(
     catalog,
     claim$job_id,
@@ -65,6 +73,46 @@ testthat::test_that("dashboard reports independent execution health and verified
   testthat::expect_true(nzchar(refreshed$progress$verified_observed_at))
   testthat::expect_true(refreshed$progress$succeeded_jobs >= 1L)
   testthat::expect_true(all(c("running_jobs", "retry_jobs", "blocked_jobs", "failed_jobs") %in% names(refreshed$progress)))
+})
+
+testthat::test_that("fresh busy workers do not trigger a pending warning", {
+  testthat::skip_if_not_installed("DBI")
+  testthat::skip_if_not_installed("RSQLite")
+
+  catalog <- acquisition_catalog_open(withr::local_tempfile(fileext = ".sqlite"))
+  withr::defer(acquisition_catalog_close(catalog))
+  source <- acquisition_catalog_register_source(
+    catalog,
+    "nl",
+    "fixture.example",
+    "busy-project",
+    source_url = "https://fixture.example/busy"
+  )
+  documents <- lapply(seq_len(3L), function(index) {
+    acquisition_catalog_register_document(
+      catalog,
+      source$source_ref_id,
+      native_attachment_id = paste0("busy-document-", index),
+      attachment_url = paste0("https://fixture.example/busy-", index, ".pdf")
+    )
+  })
+  for (document in documents) {
+    acquisition_queue_enqueue(catalog, "download", "document", document$document_ref_id)
+  }
+  workers <- c("busy-worker-1", "busy-worker-2")
+  for (worker in workers) {
+    acquisition_worker_health_configure(catalog, worker)
+    acquisition_worker_health_start(catalog, worker)
+    acquisition_worker_health_heartbeat(catalog, worker, state = "busy")
+    claim <- acquisition_queue_claim(catalog, worker)
+    testthat::expect_true(claim$ok)
+  }
+
+  summary <- acquisition_dashboard_summary(catalog)
+  testthat::expect_identical(as.integer(summary$progress$pending_jobs), 1L)
+  testthat::expect_identical(as.integer(summary$progress$running_jobs), 2L)
+  testthat::expect_identical(summary$execution_health$status, "busy")
+  testthat::expect_null(summary$pending_warning)
 })
 
 testthat::test_that("dashboard health poll token includes worker lifecycle updates", {
@@ -100,13 +148,22 @@ testthat::test_that("stale worker health is visible without a new heartbeat writ
     native_attachment_id = "stale-document",
     attachment_url = "https://fixture.example/stale.pdf"
   )
+  stale_pending_document <- acquisition_catalog_register_document(
+    catalog,
+    source$source_ref_id,
+    native_attachment_id = "stale-pending-document",
+    attachment_url = "https://fixture.example/stale-pending.pdf"
+  )
   acquisition_queue_enqueue(catalog, "download", "document", document$document_ref_id)
+  acquisition_queue_enqueue(catalog, "download", "document", stale_pending_document$document_ref_id)
   acquisition_worker_health_configure(catalog, "worker-stale")
   acquisition_worker_health_start(
     catalog,
     "worker-stale",
     now = Sys.time() - 60
   )
+  stale_claim <- acquisition_queue_claim(catalog, "worker-stale")
+  testthat::expect_true(stale_claim$ok)
 
   summary <- acquisition_dashboard_summary(catalog)
   testthat::expect_identical(summary$execution_health$status, "stale")
