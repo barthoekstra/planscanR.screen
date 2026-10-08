@@ -91,6 +91,31 @@ stale attempt may leave only an unreferenced staging/verified receipt, while a
 later attempt reuses an existing verified copy instead of overwriting it.
 Injected handlers remain available for deterministic offline tests.
 
+## Independent worker health contract (ACQ-RUN3)
+
+Worker liveness is persisted in `acquisition_worker_health`, separately from
+`acquisition_job_attempts`. The generic API bounds configured identities and
+reads to 32; BIOGAIN supplies its default two trusted identities.
+`acquisition_worker_health_configure()` records expected
+identities as `unknown`; `acquisition_worker_health_start()` publishes an
+initial `idle` heartbeat; `acquisition_worker_health_heartbeat()` publishes
+`idle` or `busy`; and `acquisition_worker_health_stop()` records a graceful
+`stopped` exit or a redacted `error` state. A hard crash leaves the last
+`idle`/`busy` row in place and is reported as `stale` once its heartbeat is
+older than the requested freshness window. An expected identity with no
+heartbeat remains `unknown`.
+
+`acquisition_worker_health_status()` reads at most the configured expected rows
+(bounded to 32) and
+returns `workers`, `counts$expected`, `counts$alive`, and
+`counts$available`. Only a fresh `idle` worker is available; fresh `busy`
+workers are alive but unavailable. Queue attempts are never used to infer
+pool liveness, and health rows contain no byte or completed-file fields.
+The CLI accepts `--expected-workers=id1,id2`, publishes lifecycle state across
+startup, idle polling, errors, and exit, and remains independent of Shiny.
+Dashboard code may consume this same status result without owning worker
+lifecycle or granting shell controls.
+
 
 ## Reconciliation and sidecar synchronization
 

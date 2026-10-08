@@ -2,7 +2,7 @@
 # repository and from the planscanR cache.  This file contains only the small
 # catalog/import seam needed by later queue work; queue claims belong to ACQ-1b.
 
-acquisition_catalog_schema_version <- 5L
+acquisition_catalog_schema_version <- 6L
 
 acquisition_catalog_abort <- function(
   message,
@@ -472,6 +472,27 @@ acquisition_catalog_apply_migration <- function(conn, version) {
   } else if (identical(version, 5L)) {
     # Queue CHECK expansion runs after this numbered transaction. SQLite only
     # permits the safe rebuild with foreign keys temporarily disabled.
+  } else if (identical(version, 6L)) {
+    DBI::dbExecute(
+      conn,
+      paste(
+        "CREATE TABLE IF NOT EXISTS acquisition_worker_health (",
+        "worker_id TEXT PRIMARY KEY,",
+        "expected INTEGER NOT NULL DEFAULT 0 CHECK (expected IN (0, 1)),",
+        "state TEXT NOT NULL CHECK (state IN ('unknown', 'idle', 'busy', 'stopped', 'error')),",
+        "started_at TEXT,",
+        "last_seen_at TEXT,",
+        "stopped_at TEXT,",
+        "error_category TEXT,",
+        "error_message TEXT,",
+        "updated_at TEXT NOT NULL",
+        ")"
+      )
+    )
+    DBI::dbExecute(
+      conn,
+      "CREATE INDEX IF NOT EXISTS acquisition_worker_health_expected_idx ON acquisition_worker_health (expected, worker_id)"
+    )
   } else {
     acquisition_catalog_abort(paste0("Unknown acquisition catalog migration: ", version))
   }

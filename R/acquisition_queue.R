@@ -10,6 +10,17 @@ acquisition_queue_abort <- function(message, class = "planscanR_error_acquisitio
   acquisition_catalog_abort(message, class = class)
 }
 
+acquisition_queue_worker_health_available <- function(catalog, worker_id) {
+  if (!exists("acquisition_worker_health_heartbeat", mode = "function") ||
+    !exists("acquisition_worker_health_is_registered", mode = "function")) {
+    return(FALSE)
+  }
+  isTRUE(tryCatch(
+    acquisition_worker_health_is_registered(catalog, worker_id),
+    error = function(error) FALSE
+  ))
+}
+
 acquisition_queue_time_after <- function(seconds, now = Sys.time()) {
   format(
     as.POSIXct(now, origin = "1970-01-01", tz = "UTC") + as.numeric(seconds),
@@ -1259,7 +1270,7 @@ acquisition_queue_start_heartbeat_guard <- function(catalog, claim, lease_second
   catalog_path <- catalog$path
   job_id <- claim$job_id
   lease_token <- claim$lease_token
-  interval <- min(30, max(0.05, as.numeric(lease_seconds) / 3))
+  interval <- min(10, max(0.05, as.numeric(lease_seconds) / 3))
   handle <- parallel::mcparallel(
     {
       parent_alive <- function() {
@@ -1288,7 +1299,15 @@ acquisition_queue_start_heartbeat_guard <- function(catalog, claim, lease_second
           ),
           error = function(error) list(ok = FALSE)
         )
-        if (!isTRUE(renewed$ok)) {
+        health <- if (acquisition_queue_worker_health_available(child_catalog, claim$worker_id)) {
+          tryCatch(
+            acquisition_worker_health_heartbeat(child_catalog, claim$worker_id, state = "busy"),
+            error = function(error) list(ok = FALSE)
+          )
+        } else {
+          list(ok = TRUE)
+        }
+        if (!isTRUE(renewed$ok) || !isTRUE(health$ok)) {
           writeLines("heartbeat-failed", lost_file)
         } else {
           writeLines("ready", ready_file)
@@ -1308,7 +1327,15 @@ acquisition_queue_start_heartbeat_guard <- function(catalog, claim, lease_second
                 ),
                 error = function(error) list(ok = FALSE)
               )
-              if (!isTRUE(renewed$ok)) {
+              health <- if (acquisition_queue_worker_health_available(child_catalog, claim$worker_id)) {
+                tryCatch(
+                  acquisition_worker_health_heartbeat(child_catalog, claim$worker_id, state = "busy"),
+                  error = function(error) list(ok = FALSE)
+                )
+              } else {
+                list(ok = TRUE)
+              }
+              if (!isTRUE(renewed$ok) || !isTRUE(health$ok)) {
                 writeLines("heartbeat-failed", lost_file)
                 break
               }
@@ -2191,6 +2218,12 @@ acquisition_worker_run <- function(
     acquisition_queue_abort("{.arg max_jobs} must be a non-negative integer or Inf.")
   }
   max_jobs <- if (is.infinite(max_jobs)) Inf else as.integer(max_jobs)
+  # Worker liveness is independent from queue attempts. The CLI records the
+  # explicit startup/exit lifecycle; this loop publishes idle/busy heartbeats
+  # so direct callers and the dashboard can observe the same contract.
+  if (acquisition_queue_worker_health_available(catalog, worker_id)) {
+    acquisition_worker_health_heartbeat(catalog, worker_id, state = "idle")
+  }
   lease_seconds <- acquisition_catalog_scalar_integer(lease_seconds, "lease_seconds", lower = 1L, upper = 604800L)
   poll_seconds <- acquisition_queue_nonnegative_seconds(poll_seconds, "poll_seconds", upper = 3600)
   lock_timeout <- acquisition_queue_nonnegative_seconds(lock_timeout, "lock_timeout", upper = 3600)
@@ -2229,6 +2262,9 @@ acquisition_worker_run <- function(
     if (!isTRUE(claim$ok)) {
       if (poll_seconds > 0 && length(outcomes) < max_jobs) Sys.sleep(poll_seconds)
       break
+    }
+    if (acquisition_queue_worker_health_available(catalog, worker_id)) {
+      acquisition_worker_health_heartbeat(catalog, worker_id, state = "busy")
     }
     claim$heartbeat <- function(seconds = lease_seconds) {
       acquisition_queue_heartbeat(catalog, claim$job_id, claim$lease_token, lease_seconds = seconds)
@@ -2285,6 +2321,9 @@ acquisition_worker_run <- function(
       download_jobs = completed$download_jobs %||% list(),
       result = result
     )
+    if (acquisition_queue_worker_health_available(catalog, worker_id)) {
+      acquisition_worker_health_heartbeat(catalog, worker_id, state = "idle")
+    }
   }
   outcomes
 }
