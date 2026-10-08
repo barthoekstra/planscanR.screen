@@ -552,7 +552,11 @@ acquisition_queue_claim <- function(
           "OR (j.kind <> 'migrate_storage' AND j.attempt_count < j.max_attempts))"),
         "AND ", if (controls_available) acquisition_controls_pause_guard_sql() else "1 = 1",
         "AND (j.host IS NULL OR ((h.cooldown_until IS NULL OR h.cooldown_until <= ?) AND h.active_count < h.max_concurrency))",
-        "ORDER BY j.priority DESC, j.available_at, j.created_at, j.job_id LIMIT 1"
+        # Preserve explicit priority tiers. At one tier, a ready download
+        # claims before discovery so newly found files make progress without
+        # allowing lower-priority downloads to jump the queue.
+        "ORDER BY j.priority DESC, CASE WHEN j.kind = 'download' THEN 0 ELSE 1 END,",
+        "j.available_at, j.created_at, j.job_id LIMIT 1"
       ),
       c(as.list(kinds), list(now, now))
     )
@@ -2100,6 +2104,47 @@ acquisition_queue_default_download <- function(
   )
 }
 
+acquisition_queue_inventory_documents <- function(inventory) {
+  if (!is.data.frame(inventory) || nrow(inventory) != 1L) {
+    stop("The discovery adapter returned a malformed inventory result.")
+  }
+  columns <- grep("^attachment_urls_", names(inventory), value = TRUE)
+  columns <- c(columns, if ("attachment_urls" %in% names(inventory)) "attachment_urls" else character(0))
+  if (length(columns) == 0L) {
+    stop("The discovery adapter returned no attachment URL columns.")
+  }
+  documents <- list()
+  seen <- character(0)
+  for (column in columns) {
+    value <- inventory[[column]]
+    if (!is.list(value) || length(value) != 1L) {
+      stop("The discovery adapter returned a malformed attachment URL column.")
+    }
+    urls <- value[[1L]]
+    if (is.null(urls)) urls <- character(0)
+    if (!is.character(urls) || anyNA(urls) || any(!nzchar(urls))) {
+      stop("The discovery adapter returned malformed attachment URLs.")
+    }
+    section <- if (identical(column, "attachment_urls")) {
+      "default"
+    } else {
+      sub("^attachment_urls_", "", column)
+    }
+    for (url in urls) {
+      if (url %in% seen) next
+      seen <- c(seen, url)
+      documents[[length(documents) + 1L]] <- list(
+        attachment_key = paste0("url:", url),
+        attachment_url = url,
+        section = section,
+        ordinal = length(documents) + 1L,
+        identity_status = "ambiguous"
+      )
+    }
+  }
+  documents
+}
+
 acquisition_queue_default_discover <- function(job, catalog) {
   conn <- acquisition_catalog_connection(catalog)
   source <- acquisition_catalog_one(
@@ -2123,7 +2168,9 @@ acquisition_queue_default_discover <- function(job, catalog) {
   metadata <- acquisition_queue_unblob(source$metadata_blob)
   records <- data.frame(
     country = as.character(source$country[[1L]]),
+    source_portal = as.character(source$portal[[1L]]),
     document_id = as.character(source$native_project_id[[1L]]),
+    url = as.character(source$source_url[[1L]]),
     stringsAsFactors = FALSE
   )
   records$attachment_urls <- list(urls)
@@ -2139,7 +2186,32 @@ acquisition_queue_default_discover <- function(job, catalog) {
       return(list(status = "retryable", error_category = "lease-stale", error_message = "The discovery lease expired before inventory validation."))
     }
   }
-  inventory <- planscanR::resolve_attachment_inventory(records)
+  has_authoritative_empty <- identical(stored_status, "empty") &&
+    !is.null(stored_checked_at) && length(stored_checked_at) == 1L &&
+    !is.na(stored_checked_at) && nzchar(as.character(stored_checked_at))
+  refresh <- nrow(documents) == 0L && !has_authoritative_empty
+  # The leaf adapter owns exact portal-response identity checks during refresh;
+  # this queue only registers an explicitly successful inventory.
+  inventory <- tryCatch(
+    planscanR::resolve_attachment_inventory(records, refresh = refresh),
+    error = function(error) {
+      list(
+        status = "retryable",
+        reason = conditionMessage(error),
+        checked_at = NA_character_,
+        attachment_urls = list(character(0))
+      )
+    }
+  )
+  if (!is.data.frame(inventory) || nrow(inventory) != 1L ||
+    !all(c("status", "reason") %in% names(inventory))) {
+    return(list(
+      status = "retryable",
+      error_category = "discovery-retryable",
+      error_message = "The discovery adapter returned a malformed inventory result.",
+      source_ref_id = as.character(source$source_ref_id[[1L]])
+    ))
+  }
   outcome <- as.character(inventory$status[[1L]])
   result_status <- switch(outcome,
     success = "succeeded",
@@ -2157,9 +2229,24 @@ acquisition_queue_default_discover <- function(job, catalog) {
     source_ref_id = as.character(source$source_ref_id[[1L]])
   )
   if (identical(outcome, "success")) {
-    result$documents <- lapply(seq_len(nrow(documents)), function(i) {
-      as.list(documents[i, , drop = FALSE])
-    })
+    discovered_documents <- if (nrow(documents) > 0L) {
+      lapply(seq_len(nrow(documents)), function(i) {
+        as.list(documents[i, , drop = FALSE])
+      })
+    } else {
+      tryCatch(
+        acquisition_queue_inventory_documents(inventory),
+        error = function(error) error
+      )
+    }
+    if (inherits(discovered_documents, "error")) {
+      result$status <- "retryable"
+      result$error_category <- "discovery-retryable"
+      result$error_message <- conditionMessage(discovered_documents)
+    } else {
+      result$documents <- discovered_documents
+      result$discovered <- length(discovered_documents)
+    }
   }
   if (identical(outcome, "retryable")) {
     result$error_category <- "discovery-retryable"
