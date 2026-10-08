@@ -31,7 +31,7 @@ acquisition_campaign_panel_ui(id = NULL)
 
 acquisition_campaign_panel_server(
   id, catalog, preview, actor_resolver, request = list(),
-  submit_fn = acquisition_campaign_submit_authenticated
+  submit_fn = acquisition_campaign_submit_authenticated, active = NULL
 )
 }
 \arguments{
@@ -60,6 +60,9 @@ acquisition_campaign_panel_server(
 \item{model_config_id}{Optional model configuration identity on submission.}
 \item{preview}{Static preview arguments or a function returning them.}
 \item{submit_fn}{Policy adapter used for explicit submission.}
+
+\item{active}{Optional function or reactive value indicating whether the
+Acquisition tab is active. Standalone panels are active by default.}
 \item{id}{Shiny module namespace.}
 }
 \value{

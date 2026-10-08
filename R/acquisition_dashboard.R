@@ -328,9 +328,32 @@ acquisition_dashboard_progress <- function(catalog) {
 }
 
 acquisition_dashboard_poll_token <- function(catalog) {
-  # The bounded reactivePoll interval is the refresh clock.  A timer token
-  # observes source, file, campaign, and queue changes without table scans.
-  as.numeric(Sys.time())
+  # The bounded reactivePoll interval is the refresh clock.  The token changes
+  # only when a persisted acquisition timestamp changes, so an inactive tab can
+  # stay quiet and an active tab does not rebuild its summary on every timer
+  # tick.  Each branch returns one scalar; attempt history is never fetched.
+  if (is.null(catalog)) {
+    return("inactive")
+  }
+  conn <- acquisition_catalog_connection(catalog)
+  token_row <- DBI::dbGetQuery(
+    conn,
+    paste(
+      "SELECT MAX(token) AS token FROM (",
+      "SELECT MAX(updated_at) AS token FROM acquisition_jobs",
+      "UNION ALL SELECT MAX(heartbeat_at) FROM acquisition_job_attempts",
+      "UNION ALL SELECT MAX(finished_at) FROM acquisition_job_attempts",
+      "UNION ALL SELECT MAX(updated_at) FROM acquisition_campaign_items",
+      "UNION ALL SELECT MAX(submitted_at) FROM acquisition_campaigns",
+      "UNION ALL SELECT MAX(created_at) FROM acquisition_sources",
+      "UNION ALL SELECT MAX(created_at) FROM acquisition_documents",
+      "UNION ALL SELECT MAX(observed_at) FROM acquisition_files",
+      ") AS acquisition_changes"
+    )
+  )
+  token <- token_row$token[[1L]]
+  token <- as.character(token %||% "")
+  if (length(token) == 0L || is.na(token)) "" else token
 }
 
 #' Return database-derived acquisition status, progress, and heartbeat data.
@@ -397,24 +420,31 @@ acquisition_dashboard_ingestion_metrics <- function(catalog) {
     value <- counts[name]
     if (length(value) == 0L || is.na(value[[1L]])) 0L else as.integer(value[[1L]])
   }
-  attempts <- DBI::dbGetQuery(
+  # Keep attempt history in SQLite.  The dashboard only needs aggregate
+  # counters and rates; selecting every successful attempt here made a large
+  # ingestion history part of every poll's R memory footprint.
+  aggregate <- DBI::dbGetQuery(
     conn,
     paste(
-      "SELECT a.bytes, a.claimed_at, a.finished_at",
+      "SELECT COUNT(a.bytes) AS byte_count,",
+      "SUM(a.bytes) AS completed_bytes,",
+      "SUM(CASE WHEN a.bytes IS NOT NULL AND a.claimed_at IS NOT NULL",
+      "AND a.finished_at IS NOT NULL AND julianday(a.finished_at) > julianday(a.claimed_at)",
+      "THEN 1 ELSE 0 END) AS measured_count,",
+      "SUM(CASE WHEN a.bytes IS NOT NULL AND a.claimed_at IS NOT NULL",
+      "AND a.finished_at IS NOT NULL AND julianday(a.finished_at) > julianday(a.claimed_at)",
+      "THEN a.bytes ELSE 0 END) AS measured_bytes,",
+      "SUM(CASE WHEN a.bytes IS NOT NULL AND a.claimed_at IS NOT NULL",
+      "AND a.finished_at IS NOT NULL AND julianday(a.finished_at) > julianday(a.claimed_at)",
+      "THEN (julianday(a.finished_at) - julianday(a.claimed_at)) * 86400.0 ELSE 0 END) AS measured_seconds",
       "FROM acquisition_job_attempts a JOIN acquisition_jobs j ON j.job_id = a.job_id",
       "WHERE j.kind = 'ingest' AND a.outcome = 'succeeded' AND a.finished_at IS NOT NULL"
     )
   )
-  seconds <- if (nrow(attempts) == 0L) {
-    numeric(0)
-  } else {
-    as.numeric(
-      as.POSIXct(attempts$finished_at, format = "%Y-%m-%dT%H:%M:%OS", tz = "UTC") -
-        as.POSIXct(attempts$claimed_at, format = "%Y-%m-%dT%H:%M:%OS", tz = "UTC")
-    )
-  }
-  measured <- is.finite(seconds) & seconds > 0 & !is.na(attempts$bytes)
-  bytes <- if (nrow(attempts) == 0L) numeric(0) else as.numeric(attempts$bytes)
+  byte_count <- suppressWarnings(as.numeric(aggregate$byte_count[[1L]]))
+  measured_count <- suppressWarnings(as.numeric(aggregate$measured_count[[1L]]))
+  measured_seconds <- suppressWarnings(as.numeric(aggregate$measured_seconds[[1L]]))
+  measured_bytes <- suppressWarnings(as.numeric(aggregate$measured_bytes[[1L]]))
   list(
     backlog = state_count("queued") + state_count("retry_wait"),
     queued = state_count("queued"),
@@ -422,9 +452,22 @@ acquisition_dashboard_ingestion_metrics <- function(catalog) {
     running = state_count("running"),
     succeeded = state_count("succeeded"),
     failed = state_count("failed") + state_count("blocked"),
-    observed_completed_bytes = if (any(!is.na(bytes))) sum(bytes, na.rm = TRUE) else NA_real_,
-    observed_mean_seconds = if (any(measured)) mean(seconds[measured]) else NA_real_,
-    observed_bytes_per_second = if (any(measured)) sum(bytes[measured]) / sum(seconds[measured]) else NA_real_
+    observed_completed_bytes = if (is.finite(byte_count) && byte_count > 0) {
+      as.numeric(aggregate$completed_bytes[[1L]])
+    } else {
+      NA_real_
+    },
+    observed_mean_seconds = if (is.finite(measured_count) && measured_count > 0 && is.finite(measured_seconds)) {
+      measured_seconds / measured_count
+    } else {
+      NA_real_
+    },
+    observed_bytes_per_second = if (is.finite(measured_count) && measured_count > 0 &&
+      is.finite(measured_seconds) && measured_seconds > 0) {
+      measured_bytes / measured_seconds
+    } else {
+      NA_real_
+    }
   )
 }
 
@@ -560,6 +603,33 @@ acquisition_dashboard_optional_input <- function(value) {
   as.character(value)
 }
 
+# Return only the small set of control targets shown in the dashboard.  A
+# campaign table can grow independently of the queue page, so reading the
+# complete campaign history to populate a select input is an avoidable poll.
+acquisition_dashboard_target_choices <- function(
+  catalog,
+  target_type = "job",
+  limit = 100L
+) {
+  target_type <- acquisition_controls_scalar(target_type, "target_type")
+  if (!target_type %in% c("job", "campaign")) {
+    acquisition_controls_abort("{.arg target_type} must be `job` or `campaign`.")
+  }
+  limit <- acquisition_dashboard_validate_page(1L, limit)$page_size
+  if (identical(target_type, "job")) {
+    rows <- acquisition_dashboard_jobs(catalog, page = 1L, page_size = limit)
+    ids <- if (nrow(rows) == 0L) character(0) else as.character(rows$job_id)
+  } else {
+    rows <- DBI::dbGetQuery(
+      acquisition_catalog_connection(catalog),
+      "SELECT campaign_id FROM acquisition_campaigns ORDER BY submitted_at DESC, campaign_id DESC LIMIT ?",
+      params = list(limit)
+    )
+    ids <- if (nrow(rows) == 0L) character(0) else as.character(rows$campaign_id)
+  }
+  stats::setNames(ids, ids)
+}
+
 acquisition_dashboard_ui <- function(id = NULL, preview = NULL) {
   ns <- if (is.null(id)) identity else shiny::NS(id)
   campaign_panel <- if (is.null(preview)) {
@@ -638,6 +708,9 @@ acquisition_dashboard_ui <- function(id = NULL, preview = NULL) {
 #' @param actor_probe Optional non-touching resolver used for session checks.
 #' @param refresh_ms Database refresh interval in milliseconds.
 #' @param page_size Queue rows shown per refresh.
+#' @param active Optional function or reactive value indicating whether the
+#'   Acquisition tab is active. Standalone dashboards are active by default.
+#' @param target_limit Maximum number of job or campaign control targets shown.
 #' @return The value returned by [shiny::moduleServer()].
 #' @export
 acquisition_dashboard_server <- function(
@@ -649,7 +722,9 @@ acquisition_dashboard_server <- function(
   preview = NULL,
   submit_fn = acquisition_campaign_submit_authenticated,
   refresh_ms = 2000L,
-  page_size = 50L
+  page_size = 50L,
+  active = NULL,
+  target_limit = 100L
 ) {
   acquisition_dashboard_require_ui()
   acquisition_catalog_connection(catalog)
@@ -660,6 +735,7 @@ acquisition_dashboard_server <- function(
     acquisition_controls_abort("{.arg refresh_ms} must be between 250 and 600000 milliseconds.")
   }
   page_size <- acquisition_dashboard_validate_page(1L, page_size)$page_size
+  target_limit <- acquisition_dashboard_validate_page(1L, target_limit)$page_size
   acquisition_controls_ensure_schema(catalog)
 
   shiny::moduleServer(id, function(input, output, session) {
@@ -670,8 +746,16 @@ acquisition_dashboard_server <- function(
         preview = preview,
         actor_resolver = actor_resolver,
         request = request,
-        submit_fn = submit_fn
+        submit_fn = submit_fn,
+        active = active
       )
+    }
+    dashboard_is_active <- function() {
+      if (is.null(active)) {
+        return(TRUE)
+      }
+      value <- if (is.function(active)) active() else active
+      isTRUE(value)
     }
     initial_actor <- curation_resolve_actor(
       actor_resolver,
@@ -680,11 +764,50 @@ acquisition_dashboard_server <- function(
     output$`dashboard-actor` <- shiny::renderText({
       paste("Authenticated actor:", initial_actor$id, "(", paste(initial_actor$roles, collapse = ", "), ")")
     })
+    summary_cache <- shiny::reactiveVal(NULL)
+    summary_failed <- FALSE
+    retry_tick <- 0L
+    poll_error <- NULL
     summary <- shiny::reactivePoll(
       refresh_ms,
       session,
-      checkFunc = function() acquisition_dashboard_poll_token(catalog),
-      valueFunc = function() acquisition_dashboard_summary(catalog)
+      checkFunc = function() {
+        if (!dashboard_is_active()) {
+          return("inactive")
+        }
+        token <- tryCatch(
+          acquisition_dashboard_poll_token(catalog),
+          error = function(error) {
+            poll_error <<- error
+            NULL
+          }
+        )
+        if (is.null(token)) {
+          summary_failed <<- TRUE
+          retry_tick <<- retry_tick + 1L
+          return(paste("error", retry_tick, sep = ":"))
+        }
+        poll_error <<- NULL
+        if (isTRUE(summary_failed)) {
+          retry_tick <<- retry_tick + 1L
+          return(paste(token, retry_tick, sep = ":"))
+        }
+        token
+      },
+      valueFunc = function() {
+        if (!dashboard_is_active()) {
+          return(summary_cache())
+        }
+        value <- if (!is.null(poll_error)) {
+          poll_error
+        } else {
+          tryCatch(acquisition_dashboard_summary(catalog), error = identity)
+        }
+        poll_error <<- NULL
+        summary_failed <<- inherits(value, "error")
+        summary_cache(value)
+        value
+      }
     )
     queue_page <- shiny::reactiveVal(1L)
     queue_page_size <- shiny::reactive({
@@ -737,6 +860,13 @@ acquisition_dashboard_server <- function(
       ignoreInit = TRUE
     )
     queue <- shiny::reactive({
+      if (!dashboard_is_active()) {
+        return(acquisition_dashboard_empty(c(job_id = "character")))
+      }
+      current_summary <- summary()
+      if (inherits(current_summary, "error") || is.null(current_summary)) {
+        return(acquisition_dashboard_empty(c(job_id = "character")))
+      }
       summary()
       acquisition_dashboard_jobs(
         catalog,
@@ -752,18 +882,65 @@ acquisition_dashboard_server <- function(
     })
     output$`dashboard-progress` <- shiny::renderTable(
       {
-        progress <- summary()$progress
+        current_summary <- summary()
+        if (is.null(current_summary)) {
+          return(data.frame(status = "inactive", stringsAsFactors = FALSE))
+        }
+        if (inherits(current_summary, "error")) {
+          return(data.frame(status = "error", message = conditionMessage(current_summary), stringsAsFactors = FALSE))
+        }
+        progress <- current_summary$progress
         as.data.frame(progress, stringsAsFactors = FALSE)
       },
       rownames = TRUE
     )
-    output$`dashboard-project-counts` <- shiny::renderTable(summary()$project_counts, striped = TRUE)
-    output$`dashboard-file-counts` <- shiny::renderTable(summary()$file_counts, striped = TRUE)
-    output$`dashboard-stage-counts` <- shiny::renderTable(summary()$stage_counts, striped = TRUE)
-    output$`dashboard-workers` <- shiny::renderTable(summary()$workers, striped = TRUE)
+    output$`dashboard-project-counts` <- shiny::renderTable(
+      {
+        value <- summary()
+        if (is.null(value) || inherits(value, "error")) {
+          return(data.frame())
+        }
+        value$project_counts
+      },
+      striped = TRUE
+    )
+    output$`dashboard-file-counts` <- shiny::renderTable(
+      {
+        value <- summary()
+        if (is.null(value) || inherits(value, "error")) {
+          return(data.frame())
+        }
+        value$file_counts
+      },
+      striped = TRUE
+    )
+    output$`dashboard-stage-counts` <- shiny::renderTable(
+      {
+        value <- summary()
+        if (is.null(value) || inherits(value, "error")) {
+          return(data.frame())
+        }
+        value$stage_counts
+      },
+      striped = TRUE
+    )
+    output$`dashboard-workers` <- shiny::renderTable(
+      {
+        value <- summary()
+        if (is.null(value) || inherits(value, "error")) {
+          return(data.frame())
+        }
+        value$workers
+      },
+      striped = TRUE
+    )
     output$`dashboard-unknown` <- shiny::renderTable(
       {
-        totals <- summary()$unknown_totals
+        value <- summary()
+        if (is.null(value) || inherits(value, "error")) {
+          return(data.frame())
+        }
+        totals <- value$unknown_totals
         as.data.frame(totals, stringsAsFactors = FALSE)
       },
       rownames = TRUE
@@ -777,13 +954,23 @@ acquisition_dashboard_server <- function(
     })
     target_choices <- NULL
     shiny::observe({
-      choices <- character(0)
-      if (identical(input$`dashboard-target-type`, "job")) {
-        rows <- queue()
-        if (nrow(rows) > 0L) choices <- stats::setNames(rows$job_id, rows$job_id)
+      choices <- if (!dashboard_is_active()) {
+        character(0)
       } else {
-        campaigns <- acquisition_campaigns(catalog)
-        if (nrow(campaigns) > 0L) choices <- stats::setNames(campaigns$campaign_id, campaigns$campaign_id)
+        current_summary <- summary()
+        if (is.null(current_summary) || inherits(current_summary, "error")) {
+          character(0)
+        } else if (identical(input$`dashboard-target-type`, "job")) {
+          rows <- queue()
+          ids <- if (nrow(rows) == 0L) character(0) else as.character(rows$job_id)
+          stats::setNames(ids, ids)
+        } else {
+          acquisition_dashboard_target_choices(
+            catalog,
+            target_type = "campaign",
+            limit = target_limit
+          )
+        }
       }
       if (!identical(choices, target_choices)) {
         selected <- shiny::isolate(input$`dashboard-target-id`)
@@ -852,6 +1039,7 @@ acquisition_dashboard_server <- function(
 #' @param actor_probe Optional non-touching resolver used for session checks.
 #' @param refresh_ms Database refresh interval in milliseconds.
 #' @param page_size Queue rows shown per refresh.
+#' @param target_limit Maximum number of control targets shown.
 #' @return A `shiny.appobj`.
 #' @export
 acquisition_dashboard_app <- function(
@@ -862,7 +1050,8 @@ acquisition_dashboard_app <- function(
   preview = NULL,
   submit_fn = acquisition_campaign_submit_authenticated,
   refresh_ms = 2000L,
-  page_size = 50L
+  page_size = 50L,
+  target_limit = 100L
 ) {
   acquisition_dashboard_require_ui()
   acquisition_catalog_connection(catalog)
@@ -873,6 +1062,7 @@ acquisition_dashboard_app <- function(
     acquisition_controls_abort("{.arg refresh_ms} must be between 250 and 600000 milliseconds.")
   }
   page_size <- acquisition_dashboard_validate_page(1L, page_size)$page_size
+  target_limit <- acquisition_dashboard_validate_page(1L, target_limit)$page_size
   acquisition_controls_ensure_schema(catalog)
   shiny::shinyApp(
     ui = shiny::fluidPage(acquisition_dashboard_ui("dashboard", preview = preview)),
@@ -886,7 +1076,8 @@ acquisition_dashboard_app <- function(
         preview = preview,
         submit_fn = submit_fn,
         refresh_ms = refresh_ms,
-        page_size = page_size
+        page_size = page_size,
+        target_limit = target_limit
       )
     }
   )

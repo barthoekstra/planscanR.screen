@@ -223,6 +223,29 @@ curation_train_model <- function(
   )
 }
 
+#' Apply a curation model probability threshold without predicting.
+#'
+#' @param records A data frame containing `select_prob`.
+#' @param threshold Probability cutoff.
+#' @return `records` with `selected_model` updated.
+#' @noRd
+curation_apply_model_threshold <- function(records, threshold = 0.5) {
+  threshold <- suppressWarnings(as.numeric(threshold))
+  if (length(threshold) != 1L || is.na(threshold) || !is.finite(threshold) || threshold < 0 || threshold > 1) {
+    curation_model_abort("{.arg threshold} must be between 0 and 1.")
+  }
+  if (!is.data.frame(records)) {
+    curation_model_abort("{.arg records} must be a data frame.")
+  }
+  probability <- if ("select_prob" %in% names(records)) {
+    suppressWarnings(as.numeric(records$select_prob))
+  } else {
+    rep(NA_real_, nrow(records))
+  }
+  records$selected_model <- is.finite(probability) & probability >= threshold
+  records
+}
+
 #' Predict with a curation selection model after validating configuration.
 #'
 #' @param model A `planscanR_selection_model`.
@@ -234,6 +257,7 @@ curation_train_model <- function(
 #' @export
 curation_predict_model <- function(model, records, config = NULL, threshold = NULL) {
   curation_model_check_config(model, config)
+  threshold <- threshold %||% model$threshold %||% 0.5
   if (nrow(records) == 0L) {
     records$select_prob <- numeric(0)
     records$selected_model <- logical(0)
@@ -270,14 +294,12 @@ curation_predict_model <- function(model, records, config = NULL, threshold = NU
   if (!any(complete)) {
     return(records)
   }
-  predicted <- predict_selection(
+  predicted <- predict_selection_probabilities(
     model,
-    records[complete, , drop = FALSE],
-    threshold = threshold
+    records[complete, , drop = FALSE]
   )
   records$select_prob[complete] <- predicted$select_prob
-  records$selected_model[complete] <- predicted$selected_model
-  records
+  curation_apply_model_threshold(records, threshold)
 }
 
 #' Save a curation model through the existing selection-model serializer.

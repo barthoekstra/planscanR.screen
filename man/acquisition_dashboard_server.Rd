@@ -11,7 +11,9 @@ acquisition_dashboard_server(
   request = NULL,
   actor_probe = NULL,
   refresh_ms = 2000L,
-  page_size = 50L
+  page_size = 50L,
+  active = NULL,
+  target_limit = 100L
 )
 }
 \arguments{
@@ -28,6 +30,11 @@ acquisition_dashboard_server(
 \item{refresh_ms}{Database refresh interval in milliseconds.}
 
 \item{page_size}{Queue rows shown per refresh.}
+
+\item{active}{Optional function or reactive value indicating whether the
+Acquisition tab is active. Standalone dashboards are active by default.}
+
+\item{target_limit}{Maximum number of job or campaign control targets shown.}
 }
 \value{
 The value returned by \code{\link[shiny:moduleServer]{shiny::moduleServer()}}.

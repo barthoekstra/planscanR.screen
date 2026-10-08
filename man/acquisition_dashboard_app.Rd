@@ -10,7 +10,8 @@ acquisition_dashboard_app(
   request = NULL,
   actor_probe = NULL,
   refresh_ms = 2000L,
-  page_size = 50L
+  page_size = 50L,
+  target_limit = 100L
 )
 }
 \arguments{
@@ -25,6 +26,8 @@ acquisition_dashboard_app(
 \item{refresh_ms}{Database refresh interval in milliseconds.}
 
 \item{page_size}{Queue rows shown per refresh.}
+
+\item{target_limit}{Maximum number of job or campaign control targets shown.}
 }
 \value{
 A \code{shiny.appobj}.

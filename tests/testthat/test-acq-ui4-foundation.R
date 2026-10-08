@@ -512,8 +512,10 @@ testthat::test_that("the curation app wires its published model into the acquisi
     app_state = new.env(parent = emptyenv())
   )
   seen <- new.env(parent = emptyenv())
+  model_calls <- 0L
   testthat::local_mocked_bindings(
     curation_predict_model = function(model, records, config = NULL, threshold = NULL) {
+      model_calls <<- model_calls + 1L
       records$select_prob <- c(0.9, 0.2)
       records$selected_model <- records$select_prob >= (threshold %||% 0.5)
       records
@@ -540,6 +542,11 @@ testthat::test_that("the curation app wires its published model into the acquisi
     testthat::expect_true(is.list(seen$arguments))
     testthat::expect_identical(seen$arguments$model_reference$model_id, "model-ui4-app")
     testthat::expect_identical(seen$arguments$policy_version, "biogain-policy.v1")
+    calls_after_initial_preview <- model_calls
+    testthat::expect_gt(calls_after_initial_preview, 0L)
+    session$setInputs(model_threshold = 0.8)
+    session$flushReact()
+    testthat::expect_identical(model_calls, calls_after_initial_preview)
   })
   testthat::expect_identical(model_ref$model_id, "model-ui4-app")
 })
