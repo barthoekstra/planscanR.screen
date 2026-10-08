@@ -755,6 +755,77 @@ acquisition_campaign_preview_items_page <- function(
   curation_app_page_rows(items, page = page, page_size = page_size)
 }
 
+acquisition_campaign_scope_normalise_countries <- function(value) {
+  if (is.null(value) || length(value) == 0L) {
+    return(character(0))
+  }
+  value <- tolower(trimws(as.character(value)))
+  sort(unique(value[!is.na(value) & nzchar(value)]))
+}
+
+acquisition_campaign_scope_countries <- function(selection) {
+  if (!is.data.frame(selection) || !"country" %in% names(selection)) {
+    return(character(0))
+  }
+  acquisition_campaign_scope_normalise_countries(selection$country)
+}
+
+acquisition_campaign_scope_attach_countries <- function(catalog, selection) {
+  if (!is.data.frame(selection) || "country" %in% names(selection) ||
+    !"source_ref_id" %in% names(selection) || nrow(selection) == 0L) {
+    return(selection)
+  }
+  source_rows <- tryCatch(
+    acquisition_campaign_source_rows(catalog, selection),
+    error = function(error) NULL
+  )
+  if (!is.null(source_rows) && nrow(source_rows) == nrow(selection)) {
+    selection$country <- as.character(source_rows$country)
+  }
+  selection
+}
+
+acquisition_campaign_scope_input <- function(scope_input, available_countries) {
+  available <- acquisition_campaign_scope_normalise_countries(available_countries)
+  if (is.null(scope_input)) {
+    return(available)
+  }
+  if (length(scope_input) == 0L) {
+    return(character(0))
+  }
+  intersect(available, acquisition_campaign_scope_normalise_countries(scope_input))
+}
+
+acquisition_campaign_apply_country_scope <- function(selection, included_countries) {
+  if (!is.data.frame(selection) || !"country" %in% names(selection)) {
+    return(selection)
+  }
+  included <- acquisition_campaign_scope_normalise_countries(included_countries)
+  country <- tolower(trimws(as.character(selection$country)))
+  if ("selected" %in% names(selection)) {
+    selected <- as.logical(selection$selected)
+    selection$selected <- !is.na(selected) & selected & !is.na(country) & country %in% included
+  }
+  override_columns <- intersect(c("manual_override", "selection_override", "decision_override"), names(selection))
+  override_column <- if (length(override_columns) > 0L) override_columns[[1L]] else "manual_override"
+  if (!override_column %in% names(selection)) {
+    selection[[override_column]] <- NA_character_
+  } else {
+    selection[[override_column]] <- as.character(selection[[override_column]])
+  }
+  selection[[override_column]][!(country %in% included)] <- "exclude"
+  selection
+}
+
+acquisition_campaign_country_scope_metadata <- function(available_countries, included_countries) {
+  available <- acquisition_campaign_scope_normalise_countries(available_countries)
+  list(
+    mode = "include",
+    available_countries = available,
+    included_countries = acquisition_campaign_scope_input(included_countries, available)
+  )
+}
+
 acquisition_campaign_preview_display_table <- function(data) {
   data <- as.data.frame(data, stringsAsFactors = FALSE)
   if (nrow(data) == 0L) {
@@ -833,6 +904,14 @@ acquisition_campaign_panel_ui <- function(id = NULL) {
         "Projects at or above this probability are selected for the preview. Changing it recalculates the read-only preview only."
       )
     ),
+    shiny::tags$div(
+      class = "campaign-country-scope",
+      shiny::h3("Country scope"),
+      shiny::helpText(
+        "Countries included in this campaign. Unticked countries are excluded from this preview and any new campaign only; previous campaigns are unchanged."
+      ),
+      shiny::uiOutput(ns("campaign-country-scope"))
+    ),
     shiny::uiOutput(ns("campaign-status")),
     shiny::tableOutput(ns("campaign-summary")),
     htmltools::tags$details(
@@ -902,8 +981,31 @@ acquisition_campaign_panel_server <- function(
   shiny::moduleServer(id, function(input, output, session) {
     preview_cache <- shiny::reactiveVal(NULL)
     preview_args_cache <- shiny::reactiveVal(NULL)
+    base_preview <- shiny::reactive(acquisition_campaign_panel_preview_args(preview))
+    scope_available <- shiny::reactive({
+      resolved <- base_preview()
+      if (is.null(resolved)) {
+        return(character(0))
+      }
+      selection <- acquisition_campaign_scope_attach_countries(catalog, resolved$selection)
+      acquisition_campaign_scope_countries(selection)
+    })
+    country_scope_touched <- shiny::reactiveVal(FALSE)
+    shiny::observeEvent(
+      input$`campaign-countries`,
+      country_scope_touched(TRUE),
+      ignoreNULL = FALSE,
+      ignoreInit = TRUE
+    )
+    country_scope_value <- shiny::reactive({
+      value <- input$`campaign-countries`
+      if (is.null(value) && isTRUE(country_scope_touched())) {
+        return(character(0))
+      }
+      value
+    })
     args <- shiny::reactive({
-      resolved <- acquisition_campaign_panel_preview_args(preview)
+      resolved <- base_preview()
       if (is.null(resolved)) {
         return(NULL)
       }
@@ -928,7 +1030,36 @@ acquisition_campaign_panel_server <- function(
           }
         }, logical(1))
       }
+      resolved$selection <- acquisition_campaign_scope_attach_countries(catalog, resolved$selection)
+      available_countries <- acquisition_campaign_scope_countries(resolved$selection)
+      if (length(available_countries) > 0L) {
+        included_countries <- acquisition_campaign_scope_input(
+          country_scope_value(),
+          available_countries
+        )
+        resolved$selection <- acquisition_campaign_apply_country_scope(
+          resolved$selection,
+          included_countries
+        )
+      }
       resolved
+    })
+    output$`campaign-country-scope` <- shiny::renderUI({
+      countries <- scope_available()
+      if (length(countries) == 0L) {
+        return(shiny::helpText("Country scope is unavailable until the preview supplies country values."))
+      }
+      selected <- shiny::isolate({
+        if (isTRUE(country_scope_touched())) country_scope_value() else countries
+      })
+      selected <- if (is.null(selected)) countries else intersect(countries, selected)
+      shiny::checkboxGroupInput(
+        session$ns("campaign-countries"),
+        label = NULL,
+        choices = stats::setNames(countries, toupper(countries)),
+        selected = selected,
+        inline = TRUE
+      )
     })
     current_preview <- shiny::reactive({
       if (!acquisition_campaign_panel_is_active(active)) {
@@ -1047,6 +1178,20 @@ acquisition_campaign_panel_server <- function(
         }
         resolved$expected_artifact_sha256 <- displayed$artifact_sha256 %||%
           resolved$expected_artifact_sha256 %||% NULL
+        available_countries <- scope_available()
+        if (length(available_countries) > 0L) {
+          included_countries <- acquisition_campaign_scope_input(
+            country_scope_value(),
+            available_countries
+          )
+          resolved$metadata <- utils::modifyList(
+            resolved$metadata %||% list(),
+            list(country_scope = acquisition_campaign_country_scope_metadata(
+              available_countries,
+              included_countries
+            ))
+          )
+        }
         result <- tryCatch(
           do.call(submit_fn, c(
             list(catalog = catalog),
