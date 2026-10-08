@@ -621,6 +621,7 @@ acquisition_dashboard_jobs <- function(
       "a.heartbeat_at AS latest_heartbeat_at, a.bytes AS latest_bytes,",
       "COALESCE(sd.source_ref_id, ss.source_ref_id) AS source_ref_id,",
       "COALESCE(sd.country, ss.country) AS country, COALESCE(sd.portal, ss.portal) AS portal,",
+      "COALESCE(sd.native_project_id, ss.native_project_id) AS native_project_id,",
       "d.native_attachment_id, COALESCE(ci.energy_kind, 'unknown') AS energy_kind",
       from,
       campaign_join,
@@ -658,6 +659,126 @@ acquisition_dashboard_optional_input <- function(value) {
   as.character(value)
 }
 
+acquisition_dashboard_action_spec <- function(action, target_type = NULL, target_id = NULL) {
+  action <- acquisition_dashboard_optional_input(action) %||% "pause"
+  target_type <- acquisition_dashboard_optional_input(target_type) %||% "target"
+  target_id <- acquisition_dashboard_optional_input(target_id)
+  type_label <- switch(target_type,
+    job = "Job",
+    campaign = "Campaign",
+    "Target"
+  )
+  target_label <- if (is.null(target_id)) {
+    paste0("the selected ", tolower(type_label))
+  } else {
+    paste(type_label, target_id)
+  }
+  labels <- c(
+    pause = "Pause pending work",
+    resume = "Resume paused work",
+    retry = "Retry terminal work",
+    cancel = "Cancel pending work"
+  )
+  effects <- c(
+    pause = "This pauses queued and waiting-to-retry work for the target; running workers continue their current step.",
+    resume = "This resumes paused work for the target so independent workers can claim it again.",
+    retry = "This requeues failed, blocked, or cancelled work for the target; running work is left alone.",
+    cancel = "This cancels pending work for the target; running workers receive a safe-stop request and finish their current step."
+  )
+  action_label <- unname(labels[action])
+  effect <- unname(effects[action])
+  if (is.na(action_label) || is.na(effect)) {
+    action_label <- "Apply acquisition control"
+    effect <- "Choose one of the available acquisition actions and an explicit target."
+  }
+  if (identical(target_type, "campaign")) {
+    effect <- paste0(
+      effect,
+      " Only jobs owned by this campaign are affected; shared or reused jobs owned by another campaign remain unchanged."
+    )
+  }
+  list(
+    action = action,
+    label = action_label,
+    target_type = target_type,
+    target_id = target_id,
+    target = target_label,
+    effect = effect,
+    confirmation_required = identical(action, "cancel")
+  )
+}
+
+acquisition_dashboard_action_guidance <- function(action, target_type = NULL, target_id = NULL) {
+  spec <- acquisition_dashboard_action_spec(action, target_type, target_id)
+  if (is.null(spec$target_id)) {
+    return("Choose an explicit target before applying an acquisition action. No action is sent until a job or campaign is selected.")
+  }
+  confirmation <- if (isTRUE(spec$confirmation_required)) {
+    " Confirm the cancellation scope before applying it."
+  } else {
+    ""
+  }
+  paste0(spec$label, " for ", spec$target, ". ", spec$effect, confirmation)
+}
+
+acquisition_dashboard_control_result_text <- function(result) {
+  if (!is.list(result)) {
+    return("The acquisition control could not be recorded.")
+  }
+  spec <- acquisition_dashboard_action_spec(
+    result$action %||% "pause",
+    result$target_type,
+    result$target_id
+  )
+  affected <- suppressWarnings(as.integer(result$affected %||% 0L))
+  running <- suppressWarnings(as.integer(result$running %||% 0L))
+  if (length(affected) != 1L || is.na(affected)) affected <- 0L
+  if (length(running) != 1L || is.na(running)) running <- 0L
+  effect <- switch(spec$action,
+    pause = paste0(affected, " queued or waiting-to-retry job(s) moved to paused state; ", running, " running worker(s) continue current work."),
+    resume = paste0(affected, " paused job(s) resumed for independent workers."),
+    retry = paste0(affected, " failed, blocked, or cancelled job(s) queued for retry."),
+    cancel = paste0(affected, " pending job(s) cancelled; a safe-stop request is active for ", running, " running worker(s)."),
+    "The selected acquisition control was recorded."
+  )
+  scope <- if (identical(spec$target_type, "campaign")) {
+    " Only jobs owned by this campaign are affected; shared or reused jobs owned by another campaign remain unchanged."
+  } else {
+    ""
+  }
+  paste0(
+    spec$label,
+    " recorded for ",
+    spec$target,
+    ". ",
+    effect,
+    scope,
+    " Audit: ",
+    as.character(result$audit_id %||% "recorded")
+  )
+}
+
+acquisition_dashboard_target_context <- function(row, target_type) {
+  values <- if (identical(target_type, "job")) {
+    c(row$country, row$portal, row$native_project_id, row$native_attachment_id, row$target_ref_id)
+  } else {
+    c(row$source_context, row$model_id, row$input_snapshot_id)
+  }
+  values <- as.character(values)
+  values <- values[!is.na(values) & nzchar(trimws(values))]
+  unique(values)
+}
+
+acquisition_dashboard_target_label <- function(row, target_type) {
+  id <- as.character(row[[if (identical(target_type, "job")) "job_id" else "campaign_id"]])
+  context <- acquisition_dashboard_target_context(row, target_type)
+  context <- setdiff(context, id)
+  if (length(context) == 0L) {
+    return(paste(tools::toTitleCase(target_type), id))
+  }
+  paste0(paste(context, collapse = " / "), " — ", tools::toTitleCase(target_type), " ", id)
+}
+
 # Return only the small set of control targets shown in the dashboard.  A
 # campaign table can grow independently of the queue page, so reading the
 # complete campaign history to populate a select input is an avoidable poll.
@@ -673,16 +794,39 @@ acquisition_dashboard_target_choices <- function(
   limit <- acquisition_dashboard_validate_page(1L, limit)$page_size
   if (identical(target_type, "job")) {
     rows <- acquisition_dashboard_jobs(catalog, page = 1L, page_size = limit)
-    ids <- if (nrow(rows) == 0L) character(0) else as.character(rows$job_id)
+    if (nrow(rows) == 0L) {
+      return(stats::setNames(character(0), character(0)))
+    }
+    ids <- as.character(rows$job_id)
+    labels <- vapply(seq_len(nrow(rows)), function(index) {
+      acquisition_dashboard_target_label(rows[index, , drop = FALSE], target_type)
+    }, character(1))
   } else {
     rows <- DBI::dbGetQuery(
       acquisition_catalog_connection(catalog),
-      "SELECT campaign_id FROM acquisition_campaigns ORDER BY submitted_at DESC, campaign_id DESC LIMIT ?",
+      paste(
+        "WITH recent_campaigns AS (",
+        "SELECT campaign_id, model_id, input_snapshot_id, submitted_at",
+        "FROM acquisition_campaigns ORDER BY submitted_at DESC, campaign_id DESC LIMIT ?",
+        ")",
+        "SELECT c.campaign_id, c.model_id, c.input_snapshot_id, c.submitted_at,",
+        "(SELECT COALESCE(s.country, '') || '/' || COALESCE(s.portal, '')",
+        "FROM acquisition_campaign_items i LEFT JOIN acquisition_sources s",
+        "ON s.source_ref_id = i.source_ref_id WHERE i.campaign_id = c.campaign_id",
+        "ORDER BY i.item_key LIMIT 1) AS source_context",
+        "FROM recent_campaigns c ORDER BY c.submitted_at DESC, c.campaign_id DESC"
+      ),
       params = list(limit)
     )
-    ids <- if (nrow(rows) == 0L) character(0) else as.character(rows$campaign_id)
+    if (nrow(rows) == 0L) {
+      return(stats::setNames(character(0), character(0)))
+    }
+    ids <- as.character(rows$campaign_id)
+    labels <- vapply(seq_len(nrow(rows)), function(index) {
+      acquisition_dashboard_target_label(rows[index, , drop = FALSE], target_type)
+    }, character(1))
   }
-  stats::setNames(ids, ids)
+  stats::setNames(ids, labels)
 }
 
 acquisition_dashboard_ui <- function(id = NULL, preview = NULL) {
@@ -717,13 +861,13 @@ acquisition_dashboard_ui <- function(id = NULL, preview = NULL) {
         "@media (max-width:576px){.acquisition-dashboard .curation-help-text{position:fixed;left:1rem;right:1rem;top:auto;bottom:1rem;width:auto;}}"
       )),
       campaign_panel,
-      shiny::h2("Acquisition dashboard"),
+      shiny::h2("3. Monitor queued acquisition"),
       shiny::textOutput(ns("dashboard-actor")),
       shiny::tags$div(
         id = ns("dashboard-summary"),
-        shiny::h3("Progress", curation_app_help(
+        shiny::h3("Monitor progress", curation_app_help(
           "Progress summary",
-          "Counts are read from the acquisition catalog. Unknown totals stay unknown until the relevant worker records them."
+          "Queued work is processed by independent workers. Counts are read from the acquisition catalog; unknown totals stay unknown until the relevant worker records them."
         )),
         shiny::tableOutput(ns("dashboard-progress")),
         shiny::h3("Projects by country and energy"),
@@ -773,16 +917,40 @@ acquisition_dashboard_ui <- function(id = NULL, preview = NULL) {
         shiny::tableOutput(ns("dashboard-queue")),
         shiny::tags$details(
           shiny::tags$summary("Administrator controls"),
-          shiny::p("These controls affect the selected queued target and require administrator access. The reason is written to the audit trail."),
-          shiny::selectInput(ns("dashboard-action"), "Action", choices = c("Pause" = "pause", "Resume" = "resume", "Retry" = "retry", "Cancel" = "cancel")),
-          shiny::selectInput(ns("dashboard-target-type"), "Target type", choices = c("Job" = "job", "Campaign" = "campaign")),
-          shiny::selectInput(ns("dashboard-target-id"), "Target", choices = character(0)),
-          shiny::textInput(ns("dashboard-reason"), "Reason"),
+          shiny::p("Choose one explicit job or campaign target. Administrator access is required and the current actor is checked when the action is applied; the reason is written to the audit trail."),
+          shiny::selectInput(
+            ns("dashboard-action"),
+            "Action",
+            choices = c(
+              "Pause pending work" = "pause",
+              "Resume paused work" = "resume",
+              "Retry terminal work" = "retry",
+              "Cancel pending work" = "cancel"
+            )
+          ),
+          shiny::selectInput(
+            ns("dashboard-target-type"),
+            "Target type",
+            choices = c("Job (one queue item)" = "job", "Campaign (jobs owned by this campaign)" = "campaign")
+          ),
+          shiny::selectInput(
+            ns("dashboard-target-id"),
+            "Explicit target",
+            choices = c("Choose an explicit target" = ""),
+            selected = ""
+          ),
+          shiny::textOutput(ns("dashboard-action-guidance")),
+          shiny::checkboxInput(
+            ns("dashboard-cancel-confirm"),
+            "I confirm the cancellation scope described above",
+            value = FALSE
+          ),
+          shiny::textInput(ns("dashboard-reason"), "Reason (saved in audit trail)"),
           shiny::div(
-            shiny::actionButton(ns("dashboard-apply"), "Apply control"),
+            shiny::actionButton(ns("dashboard-apply"), "Apply selected action"),
             curation_app_help(
-              "Apply control",
-              "This records the selected administrator action for the selected job or campaign. Check the audit result next."
+              "Apply selected action",
+              "The target and action text above describe the effect before execution. Cancel requires the confirmation checkbox."
             )
           ),
           shiny::textOutput(ns("dashboard-action-result"))
@@ -1061,39 +1229,90 @@ acquisition_dashboard_server <- function(
           character(0)
         } else if (identical(input$`dashboard-target-type`, "job")) {
           rows <- queue()
-          ids <- if (nrow(rows) == 0L) character(0) else as.character(rows$job_id)
-          stats::setNames(ids, ids)
+          if (nrow(rows) == 0L) {
+            character(0)
+          } else {
+            ids <- as.character(rows$job_id)
+            labels <- vapply(seq_len(nrow(rows)), function(index) {
+              acquisition_dashboard_target_label(rows[index, , drop = FALSE], "job")
+            }, character(1))
+            stats::setNames(ids, labels)
+          }
         } else {
           acquisition_dashboard_target_choices(
             catalog,
-            target_type = "campaign",
+            target_type = input$`dashboard-target-type` %||% "job",
             limit = target_limit
           )
         }
       }
+      choices <- c("Choose an explicit target" = "", choices)
       if (!identical(choices, target_choices)) {
         selected <- shiny::isolate(input$`dashboard-target-id`)
-        if (is.null(selected) || length(selected) != 1L || !selected %in% unname(choices)) {
-          selected <- if (length(choices) > 0L) unname(choices[[1L]]) else character(0)
+        if (is.null(selected) || length(selected) != 1L || !selected %in% unname(choices) || !nzchar(selected)) {
+          selected <- ""
         }
         shiny::updateSelectInput(session, "dashboard-target-id", choices = choices, selected = selected)
         target_choices <<- choices
       }
     })
-    output$`dashboard-action-result` <- shiny::renderText({
-      if (is.null(input$`dashboard-apply`) || input$`dashboard-apply` < 1L) {
-        return("No control action submitted.")
-      }
-      "Choose a target and apply an administrator control."
+    output$`dashboard-action-guidance` <- shiny::renderText({
+      acquisition_dashboard_action_guidance(
+        input$`dashboard-action`,
+        input$`dashboard-target-type`,
+        acquisition_dashboard_optional_input(input$`dashboard-target-id`)
+      )
     })
+    action_result <- shiny::reactiveVal(
+      "No control action submitted. Choose an explicit target before applying an action."
+    )
+    cancel_confirmation <- shiny::reactiveVal(NULL)
+    output$`dashboard-action-result` <- shiny::renderText(action_result())
+    shiny::observeEvent(input$`dashboard-cancel-confirm`,
+      {
+        if (isTRUE(input$`dashboard-cancel-confirm`) && identical(input$`dashboard-action`, "cancel")) {
+          cancel_confirmation(list(
+            action = input$`dashboard-action`,
+            target_type = input$`dashboard-target-type`,
+            target_id = input$`dashboard-target-id`
+          ))
+        } else {
+          cancel_confirmation(NULL)
+        }
+      },
+      ignoreInit = TRUE
+    )
+    reset_cancel_confirmation <- function() {
+      cancel_confirmation(NULL)
+      shiny::updateCheckboxInput(session, "dashboard-cancel-confirm", value = FALSE)
+    }
+    shiny::observeEvent(input$`dashboard-action`, reset_cancel_confirmation(), ignoreInit = TRUE)
+    shiny::observeEvent(input$`dashboard-target-type`, reset_cancel_confirmation(), ignoreInit = TRUE)
+    shiny::observeEvent(input$`dashboard-target-id`, reset_cancel_confirmation(), ignoreInit = TRUE)
     shiny::observeEvent(input$`dashboard-apply`,
       {
+        target_id <- acquisition_dashboard_optional_input(input$`dashboard-target-id`)
+        action <- acquisition_dashboard_optional_input(input$`dashboard-action`) %||% "pause"
+        if (is.null(target_id)) {
+          action_result("Choose an explicit target before applying an acquisition action. No action was sent.")
+          return()
+        }
+        confirmation <- cancel_confirmation()
+        cancellation_confirmed <- isTRUE(input$`dashboard-cancel-confirm`) &&
+          is.list(confirmation) &&
+          identical(confirmation$action, action) &&
+          identical(confirmation$target_type, input$`dashboard-target-type`) &&
+          identical(confirmation$target_id, target_id)
+        if (identical(action, "cancel") && !cancellation_confirmed) {
+          action_result("Confirm the cancellation scope before applying cancel. No action was sent.")
+          return()
+        }
         result <- tryCatch(
           acquisition_control_apply(
             catalog = catalog,
-            action = input$`dashboard-action`,
+            action = action,
             target_type = input$`dashboard-target-type`,
-            target_id = input$`dashboard-target-id`,
+            target_id = target_id,
             actor_resolver = actor_resolver,
             request = acquisition_dashboard_request(request, session),
             reason = input$`dashboard-reason`
@@ -1101,11 +1320,11 @@ acquisition_dashboard_server <- function(
           error = function(error) error
         )
         if (inherits(result, "error")) {
-          output$`dashboard-action-result` <- shiny::renderText(conditionMessage(result))
+          action_result(conditionMessage(result))
         } else {
-          output$`dashboard-action-result` <- shiny::renderText(
-            paste0(result$action, " recorded as ", result$status, " by ", result$actor_id, ". Audit: ", result$audit_id)
-          )
+          action_result(acquisition_dashboard_control_result_text(result))
+          cancel_confirmation(NULL)
+          shiny::updateCheckboxInput(session, "dashboard-cancel-confirm", value = FALSE)
         }
       },
       ignoreInit = TRUE

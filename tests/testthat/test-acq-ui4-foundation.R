@@ -415,7 +415,7 @@ testthat::test_that("the optional campaign panel names preview, unknown totals a
   html <- htmltools::renderTags(acquisition_campaign_panel_ui("ui4"))$html
   testthat::expect_match(html, "Acquisition preview")
   testthat::expect_match(html, "unknown until discovery")
-  testthat::expect_match(html, "Submit acquisition campaign")
+  testthat::expect_match(html, "Queue selected acquisition")
 })
 
 testthat::test_that("the campaign panel submits the displayed artifact digest", {

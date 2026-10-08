@@ -690,6 +690,48 @@ acquisition_campaign_panel_is_active <- function(active, isolate = FALSE) {
   isTRUE(value)
 }
 
+acquisition_campaign_submission_acknowledgement <- function(result) {
+  if (!is.list(result)) {
+    return("The acquisition campaign could not be queued.")
+  }
+  campaign_id <- as.character(result$campaign_id %||% "the campaign")
+  status <- as.character(result$status %||% "inserted")
+  items <- result$items
+  statuses <- character(0)
+  job_ids <- character(0)
+  if (is.data.frame(items) && nrow(items) > 0L) {
+    statuses <- if ("work_status" %in% names(items)) as.character(items$work_status) else rep("", nrow(items))
+    job_ids <- if ("job_id" %in% names(items)) as.character(items$job_id) else character(0)
+  } else if (is.list(items) && length(items) > 0L) {
+    statuses <- vapply(items, function(item) as.character(item$work_status %||% ""), character(1))
+    job_ids <- vapply(items, function(item) as.character(item$job_id %||% NA_character_), character(1))
+  }
+  selected <- sum(statuses %in% c("enqueued", "reused"))
+  new_jobs <- sum(statuses == "enqueued")
+  reused_jobs <- sum(statuses == "reused")
+  job_ids <- unique(job_ids[!is.na(job_ids) & nzchar(job_ids)])
+  queue_jobs <- length(job_ids)
+  if (queue_jobs == 0L) queue_jobs <- selected
+  queue_label <- if (queue_jobs == 1L) "queue job" else "queue jobs"
+  project_label <- if (selected == 1L) "selected project" else "selected projects"
+  details <- paste0(
+    " (", new_jobs, " new, ", reused_jobs, " reused existing job reference(s))"
+  )
+  if (identical(status, "replayed")) {
+    paste0(
+      "Campaign ", campaign_id, " already exists and is unchanged; ",
+      queue_jobs, " ", queue_label, " remain associated with ", selected, " ", project_label, ". ",
+      "independent workers process the durable queue; this page does not run discovery or downloads."
+    )
+  } else {
+    paste0(
+      "Campaign ", campaign_id, " queued ", queue_jobs, " ", queue_label,
+      " for ", selected, " ", project_label, details, ". ",
+      "independent workers process the durable queue; this page does not run discovery or downloads."
+    )
+  }
+}
+
 acquisition_campaign_preview_items_page <- function(
   preview,
   search = NULL,
@@ -781,8 +823,8 @@ acquisition_campaign_panel_ui <- function(id = NULL) {
       ".acquisition-campaign-preview .curation-help:hover .curation-help-text,.acquisition-campaign-preview .curation-help:focus .curation-help-text{display:block;position:fixed;left:1rem;right:auto;top:auto;bottom:1rem;width:18rem;max-width:calc(100vw - 2rem);}",
       "@media (max-width:576px){.acquisition-campaign-preview .curation-help-text{position:fixed;left:1rem;right:1rem;top:auto;bottom:1rem;width:auto;}}"
     )),
-    shiny::h2("Acquisition preview"),
-    shiny::helpText("Preview is read-only; attachment and file totals stay unknown until discovery."),
+    shiny::h2("1. Acquisition preview"),
+    shiny::helpText("Preview is read-only: 0 jobs are created. Attachment and file totals stay unknown until discovery; submit explicitly to queue selected work for independent workers."),
     htmltools::div(
       class = "d-flex align-items-end flex-wrap gap-2",
       shiny::numericInput(ns("campaign-threshold"), "Selection threshold", value = 0.5, min = 0, max = 1, step = 0.01),
@@ -821,11 +863,12 @@ acquisition_campaign_panel_ui <- function(id = NULL) {
     shiny::tableOutput(ns("campaign-items")),
     htmltools::div(
       class = "d-flex align-items-center flex-wrap gap-2",
-      shiny::actionButton(ns("campaign-submit"), "Submit acquisition campaign"),
-      shiny::helpText("Submission creates durable queue work for the selected projects and is restricted to administrators."),
+      shiny::h3("2. Queue selected acquisition"),
+      shiny::actionButton(ns("campaign-submit"), "Queue selected acquisition"),
+      shiny::helpText("Queueing is the explicit administrator action. It creates durable work for the selected projects. Independent workers discover and download it; this page does not run workers. Queueing is restricted to administrators."),
       curation_app_help(
-        "Submit acquisition campaign",
-        "This is the explicit transition from a read-only preview to queued acquisition work. Confirm the target and next monitor step before submitting."
+        "Queue selected acquisition",
+        "This is the explicit transition from a read-only preview to queued acquisition work. Confirm the selected projects and then monitor the independent workers in step 3."
       )
     ),
     shiny::textOutput(ns("campaign-submit-result"))
@@ -950,7 +993,7 @@ acquisition_campaign_panel_server <- function(
       if (inherits(value, "error")) {
         return(shiny::tags$p(conditionMessage(value), class = "text-danger"))
       }
-      shiny::tags$p("No jobs created: this preview is read-only.")
+      shiny::tags$p("No jobs created (0): this preview is read-only. Queue selected work explicitly, then monitor independent workers.")
     })
     output$`campaign-summary` <- shiny::renderTable(
       {
@@ -980,24 +1023,24 @@ acquisition_campaign_panel_server <- function(
       },
       striped = TRUE
     )
-    output$`campaign-submit-result` <- shiny::renderText({
-      value <- input$`campaign-submit`
-      if (is.null(value) || value < 1L) "No campaign submitted." else "Submit an explicit campaign to create durable work."
-    })
+    submission_result <- shiny::reactiveVal(
+      "No campaign queued. Preview is read-only until an administrator queues selected acquisition."
+    )
+    output$`campaign-submit-result` <- shiny::renderText(submission_result())
     shiny::observeEvent(input$`campaign-submit`,
       {
         if (!acquisition_campaign_panel_is_active(active)) {
-          output$`campaign-submit-result` <- shiny::renderText("Campaign submission is unavailable while the Acquisition tab is inactive.")
+          submission_result("Campaign queueing is unavailable while the Acquisition tab is inactive.")
           return()
         }
         resolved <- args()
         if (is.null(resolved)) {
-          output$`campaign-submit-result` <- shiny::renderText("Campaign submission is unavailable.")
+          submission_result("Campaign queueing is unavailable.")
           return()
         }
         displayed <- current_preview()
         if (is.null(displayed) || inherits(displayed, "error")) {
-          output$`campaign-submit-result` <- shiny::renderText(
+          submission_result(
             if (inherits(displayed, "error")) conditionMessage(displayed) else "Campaign submission is unavailable."
           )
           return()
@@ -1016,11 +1059,9 @@ acquisition_campaign_panel_server <- function(
           error = identity
         )
         if (inherits(result, "error")) {
-          output$`campaign-submit-result` <- shiny::renderText(conditionMessage(result))
+          submission_result(conditionMessage(result))
         } else {
-          output$`campaign-submit-result` <- shiny::renderText(
-            paste0("Campaign ", result$campaign_id, " submitted by ", result$submitted_by %||% "authenticated admin", ".")
-          )
+          submission_result(acquisition_campaign_submission_acknowledgement(result))
         }
       },
       ignoreInit = TRUE
