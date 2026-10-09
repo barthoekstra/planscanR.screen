@@ -429,8 +429,10 @@ acquisition_storage_ensure_default_root_connection <- function(conn) {
       )
     }
   }
-  # Unknown-size built-in downloads reserve the leaf's hard transfer cap. An
-  # administrator can replace this versioned setting for other job kinds.
+  # Keep a finite legacy estimate for storage jobs that do not carry their own
+  # size. Download reservations use the live free-space headroom below instead
+  # of treating this setting (or the leaf's historical 50 MiB option) as a
+  # per-file ceiling.
   if (is.null(acquisition_storage_setting_value_connection(conn, "default_estimate_bytes"))) {
     now <- acquisition_catalog_now()
     DBI::dbExecute(
@@ -779,10 +781,6 @@ acquisition_storage_try_reserve_connection <- function(conn, job) {
   if (is.null(root)) {
     return(list(ok = TRUE, skipped = TRUE))
   }
-  bytes <- acquisition_storage_job_estimate(job, conn)
-  if (identical(as.character(job$kind), "download")) {
-    bytes <- max(bytes, acquisition_storage_transfer_cap_bytes())
-  }
   capacity <- acquisition_storage_capacity(as.character(root$root_path[[1L]]))
   available <- as.numeric(capacity$free_bytes)
   total <- as.numeric(capacity$total_bytes)
@@ -794,6 +792,35 @@ acquisition_storage_try_reserve_connection <- function(conn, job) {
     as.numeric(root$reserve_bytes[[1L]]),
     total * as.numeric(root$reserve_fraction[[1L]])
   )
+  is_download <- identical(as.character(job$kind), "download")
+  # `estimated_bytes` is advisory catalog metadata rather than a trusted
+  # Content-Length. Every production download therefore reserves the live
+  # headroom, even when an estimate is present. This keeps an underestimate
+  # from becoming a second per-file ceiling and lets the downloader stream up
+  # to the same disk boundary. It intentionally serializes downloads on a
+  # root; a later queued job remains queued and can claim after release.
+  if (is_download) {
+    # Leave a byte beyond the configured reserve to avoid rejecting an exact
+    # boundary because `reserve_fraction` is represented as a fractional
+    # double while `df` reports whole filesystem blocks.
+    bytes <- max(0, available - as.numeric(held) - reserve - 1)
+  } else {
+    # Storage migration keeps the versioned estimate/default behavior because
+    # those jobs move already materialized files and do not use the download
+    # stream's historical 50 MiB setting.
+    bytes <- acquisition_storage_job_estimate(job, conn)
+  }
+  if (!is.finite(bytes) || bytes <= 0) {
+    return(list(
+      ok = FALSE,
+      reason = "disk-reserve-exhausted",
+      root_id = as.character(root$root_id[[1L]]),
+      root_path = as.character(root$root_path[[1L]]),
+      available_bytes = available,
+      reserved_bytes = held,
+      requested_bytes = bytes
+    ))
+  }
   if (available - as.numeric(held) - bytes < reserve) {
     return(list(ok = FALSE, reason = "disk-reserve-exhausted", root_id = as.character(root$root_id[[1L]]), root_path = as.character(root$root_path[[1L]]), available_bytes = available, reserved_bytes = held, requested_bytes = bytes))
   }

@@ -33,19 +33,7 @@ test_that("settings are versioned and reservation claims enforce a shared disk r
   admin <- curation_actor("admin", roles = "admin")
   acquisition_storage_register_root(catalog, "downloads", root, admin, reserve_bytes = 1L)
   acquisition_storage_set(catalog, "default_estimate_bytes", 2^60, admin)
-
-  source <- acquisition_catalog_register_source(
-    catalog, "nl", "portal.example", "project-1",
-    source_url = "https://portal.example/project-1"
-  )
-  document <- acquisition_catalog_register_document(
-    catalog, source$source_ref_id,
-    native_attachment_id = "file-1",
-    attachment_url = "https://portal.example/project-1/file.pdf"
-  )
-  job <- acquisition_queue_enqueue(
-    catalog, "download", "document", document$document_ref_id
-  )
+  acquisition_queue_enqueue(catalog, "migrate_storage", "storage_root", "downloads")
   expect_false(acquisition_queue_claim(catalog, "worker-a")$ok)
   expect_identical(acquisition_queue_jobs(catalog)$state[[1L]], "queued")
   expect_equal(nrow(acquisition_storage_reservations(catalog)), 0L)
@@ -57,7 +45,7 @@ test_that("settings are versioned and reservation claims enforce a shared disk r
   expect_identical(claim$storage_root_path, planscanR::storage_root_validate(root, writable = TRUE))
   held <- acquisition_storage_reservations(catalog)
   expect_identical(held$state[[1L]], "held")
-  expect_equal(held$bytes[[1L]], planscanR::storage_transfer_cap_bytes())
+  expect_equal(held$bytes[[1L]], 1)
   acquisition_queue_complete(catalog, claim$job_id, claim$lease_token, status = "retryable")
   expect_identical(acquisition_storage_reservations(catalog)$state[[1L]], "released")
   expect_equal(max(acquisition_storage_settings(catalog, "default_estimate_bytes")$version), 3L)
@@ -87,14 +75,15 @@ test_that("fractional reserve is measured against total filesystem capacity", {
     admin,
     reserve_fraction = reserve_fraction
   )
-  source <- acquisition_catalog_register_source(catalog, "nl", "portal.example", "fraction")
-  document <- acquisition_catalog_register_document(catalog, source$source_ref_id, native_attachment_id = "fraction")
-  acquisition_queue_enqueue(catalog, "download", "document", document$document_ref_id)
+  acquisition_queue_enqueue(
+    catalog, "migrate_storage", "storage_root", "00-fraction",
+    estimated_bytes = cap
+  )
   expect_false(acquisition_queue_claim(catalog, "fraction-worker")$ok)
   expect_equal(nrow(acquisition_storage_reservations(catalog)), 0L)
 })
 
-test_that("a claimed download keeps its reservation cap when settings increase", {
+test_that("unknown-size downloads use live headroom instead of the leaf option", {
   skip_if_not_installed("filelock")
   catalog <- storage_catalog()
   on.exit(catalog$close(), add = TRUE)
@@ -116,6 +105,7 @@ test_that("a claimed download keeps its reservation cap when settings increase",
   observed <- new.env(parent = emptyenv())
   fake_download <- function(url, country, document_id, cache_dir, max_file_size_mb, overwrite = FALSE) {
     observed$cap <- max_file_size_mb * 1024^2
+    observed$timeout <- getOption("planscanR.timeout")
     tibble::tibble(
       url = url,
       local_path = NA_character_,
@@ -126,10 +116,99 @@ test_that("a claimed download keeps its reservation cap when settings increase",
     )
   }
   testthat::local_mocked_bindings(download_to_cache = fake_download, .package = "planscanR")
-  withr::local_options(list(planscanR.max_file_size_mb = reserved / (1024^2) * 2))
+  timeout_before <- getOption("planscanR.timeout")
+  withr::local_options(list(planscanR.max_file_size_mb = 1))
   result <- acquisition_queue_default_download(claim, catalog)
   expect_identical(result$status, "retryable")
   expect_equal(observed$cap, reserved)
+  expect_true(is.infinite(observed$timeout))
+  expect_identical(getOption("planscanR.timeout"), timeout_before)
+  acquisition_queue_complete(catalog, claim$job_id, claim$lease_token, status = "retryable")
+})
+
+test_that("unknown-size contention leaves the next job queued for a later claim", {
+  catalog <- storage_catalog()
+  on.exit(catalog$close(), add = TRUE)
+  admin <- curation_actor("admin", roles = "admin")
+  root <- file.path(withr::local_tempdir(), "contention-root")
+  acquisition_storage_register_root(catalog, "00-contention", root, admin, reserve_bytes = 1L)
+  source <- acquisition_catalog_register_source(catalog, "nl", "portal.example", "contention")
+  first_document <- acquisition_catalog_register_document(
+    catalog,
+    source$source_ref_id,
+    native_attachment_id = "first",
+    attachment_url = "https://portal.example/first.bin"
+  )
+  second_document <- acquisition_catalog_register_document(
+    catalog,
+    source$source_ref_id,
+    native_attachment_id = "second",
+    attachment_url = "https://portal.example/second.bin"
+  )
+  first_job <- acquisition_queue_enqueue(catalog, "download", "document", first_document$document_ref_id)
+  second_job <- acquisition_queue_enqueue(catalog, "download", "document", second_document$document_ref_id)
+  first <- acquisition_queue_claim(catalog, "contention-worker-a")
+  expect_true(first$ok)
+  second <- acquisition_queue_claim(catalog, "contention-worker-b")
+  expect_false(second$ok)
+  expect_identical(second$status, "storage-reserve-unavailable")
+  states <- acquisition_queue_jobs(catalog)
+  expect_identical(states$state[match(first_job$job_id, states$job_id)], "running")
+  expect_identical(states$state[match(second_job$job_id, states$job_id)], "queued")
+  acquisition_queue_complete(catalog, first$job_id, first$lease_token, status = "retryable")
+  expect_true(acquisition_queue_claim(catalog, "contention-worker-b")$ok)
+})
+
+test_that("download estimates remain advisory above 50 MiB", {
+  skip_if_not_installed("filelock")
+  catalog <- storage_catalog()
+  on.exit(catalog$close(), add = TRUE)
+  admin <- curation_actor("admin", roles = "admin")
+  root <- file.path(withr::local_tempdir(), "known-size-root")
+  capacity <- planscanR::storage_capacity(
+    planscanR::storage_root_validate(root, create = TRUE, writable = TRUE)
+  )
+  estimate <- 200 * 1024^2
+  skip_if(
+    capacity$free_bytes <= estimate + 1024^2,
+    "The test filesystem has too little headroom for the advisory-estimate check."
+  )
+  acquisition_storage_register_root(catalog, "00-known-size", root, admin, reserve_bytes = 1L)
+  source <- acquisition_catalog_register_source(catalog, "nl", "portal.example", "known-size")
+  document <- acquisition_catalog_register_document(
+    catalog,
+    source$source_ref_id,
+    native_attachment_id = "known-size",
+    attachment_url = "https://portal.example/known-size.bin"
+  )
+  acquisition_queue_enqueue(
+    catalog,
+    "download",
+    "document",
+    document$document_ref_id,
+    estimated_bytes = estimate
+  )
+  claim <- acquisition_queue_claim(catalog, "known-size-worker")
+  expect_true(claim$ok)
+  expect_gte(claim$storage_reservation_bytes, estimate)
+  expect_gt(claim$storage_reservation_bytes, planscanR::storage_transfer_cap_bytes())
+  observed <- new.env(parent = emptyenv())
+  fake_download <- function(url, country, document_id, cache_dir, max_file_size_mb, overwrite = FALSE) {
+    observed$cap <- max_file_size_mb * 1024^2
+    tibble::tibble(
+      url = url,
+      local_path = NA_character_,
+      size_bytes = NA_real_,
+      sha256 = NA_character_,
+      status = "failed",
+      reason = "offline known-size fixture"
+    )
+  }
+  testthat::local_mocked_bindings(download_to_cache = fake_download, .package = "planscanR")
+  withr::local_options(list(planscanR.max_file_size_mb = 1))
+  result <- acquisition_queue_default_download(claim, catalog)
+  expect_identical(result$status, "retryable")
+  expect_equal(observed$cap, claim$storage_reservation_bytes)
   acquisition_queue_complete(catalog, claim$job_id, claim$lease_token, status = "retryable")
 })
 

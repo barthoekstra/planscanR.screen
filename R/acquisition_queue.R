@@ -1941,28 +1941,18 @@ acquisition_queue_default_download <- function(
   } else {
     Inf
   }
-  configured_cap_bytes <- if (exists("acquisition_storage_transfer_cap_bytes", mode = "function")) {
-    tryCatch(
-      acquisition_storage_transfer_cap_bytes(),
-      error = function(error) {
-        if (is.finite(reservation_cap_bytes)) reservation_cap_bytes else stop(error)
-      }
-    )
-  } else {
-    max_file_size_bytes <- getOption("planscanR.max_file_size_mb", 50)
-    if (is.null(max_file_size_bytes) || is.infinite(max_file_size_bytes) || max_file_size_bytes <= 0) {
-      Inf
-    } else {
-      as.numeric(max_file_size_bytes) * 1024^2
-    }
-  }
   content_addressed <- isTRUE(getOption("planscanR.content_addressed_downloads", FALSE))
-  # Content-addressed mode retains the legacy file while publishing a second
-  # copy. Bind the transfer ceiling to both copies in the held reservation.
+  # The claim's reservation is the production transfer ceiling. Download
+  # claims reserve live filesystem headroom because persisted estimates are
+  # advisory and must not cap a response that turns out to be larger. Do not
+  # apply planscanR.max_file_size_mb here: that historical option is useful for
+  # direct leaf callers but must not cap queued campaign acquisition.
+  # Content-addressed mode retains two copies, so divide the reservation back
+  # to the one-transfer ceiling here.
   reservation_transfer_cap <- reservation_cap_bytes / if (content_addressed) 2 else 1
-  transfer_cap_bytes <- min(as.numeric(configured_cap_bytes), reservation_transfer_cap)
+  transfer_cap_bytes <- reservation_transfer_cap
   if (!is.finite(transfer_cap_bytes) || transfer_cap_bytes <= 0) {
-    return(list(status = "blocked", error_category = "missing-transfer-cap", error_message = "A finite transfer cap bound to the storage reservation is required."))
+    return(list(status = "blocked", error_category = "missing-transfer-cap", error_message = "A finite transfer ceiling bound to the storage reservation is required."))
   }
   max_file_size_mb <- transfer_cap_bytes / (1024^2)
   download_fn <- planscanR::download_to_cache
@@ -1983,6 +1973,36 @@ acquisition_queue_default_download <- function(
     download_args$content_addressed <- content_addressed
     download_args$storage_root_id <- root_id
   }
+  # Large acquisition transfers must not inherit planscanR's historical
+  # 60-second total request timeout. Scope the unbounded total timeout to this
+  # download only; the independent lease heartbeat remains active while the
+  # request is in flight, and discovery/health requests retain their defaults.
+  had_max_size_option <- "planscanR.max_file_size_mb" %in% names(options())
+  previous_max_size <- getOption("planscanR.max_file_size_mb")
+  had_timeout_option <- "planscanR.timeout" %in% names(options())
+  previous_timeout <- getOption("planscanR.timeout")
+  # Keep compatibility with an older leaf that does not expose the explicit
+  # cap argument: its package option is scoped to the same reservation-derived
+  # ceiling rather than falling back to 50 MiB or the worker's default.
+  options(
+    planscanR.max_file_size_mb = max_file_size_mb,
+    planscanR.timeout = Inf
+  )
+  on.exit(
+    {
+      if (had_max_size_option) {
+        options(planscanR.max_file_size_mb = previous_max_size)
+      } else {
+        options(planscanR.max_file_size_mb = NULL)
+      }
+      if (had_timeout_option) {
+        options(planscanR.timeout = previous_timeout)
+      } else {
+        options(planscanR.timeout = NULL)
+      }
+    },
+    add = TRUE
+  )
   result <- do.call(download_fn, download_args)
   if (!is.data.frame(result) || nrow(result) == 0L) {
     return(list(status = "retryable", error_category = "empty-download-result", error_message = "The downloader returned no result."))

@@ -51,6 +51,14 @@ if (!requireNamespace("planscanR.screen", quietly = TRUE)) {
 }
 
 catalog <- planscanR.screen::acquisition_catalog_open(catalog_path)
+# Queued downloads receive a reservation-derived ceiling from the worker
+# claim. Keep the leaf option unbounded in this production process so a
+# historical 50 MiB default cannot become an independent acquisition limit.
+# The queue handler scopes the leaf request timeout to the transfer and keeps
+# the independent lease guard heartbeating while the request is running.
+# Set it after catalog initialization because the catalog's legacy migration
+# still records a finite estimate for non-download storage jobs.
+options(planscanR.max_file_size_mb = Inf)
 health_started <- FALSE
 health_failed <- FALSE
 on.exit({

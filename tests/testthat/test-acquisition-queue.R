@@ -351,6 +351,17 @@ test_that("concurrent stale publication keeps one canonical file", {
   db <- withr::local_tempfile(fileext = ".sqlite")
   cache <- withr::local_tempdir()
   catalog <- acquisition_catalog_open(db)
+  # The production queue binds the downloader to a registered storage root.
+  # Keep this subprocess fixture on the same root as its mocked publication so
+  # the reservation-derived transfer ceiling is finite in both workers.
+  acquisition_storage_register_root(
+    catalog,
+    "00-test-downloads",
+    cache,
+    curation_actor("test-admin", roles = "admin"),
+    reserve_bytes = 1L,
+    reserve_fraction = 0
+  )
   refs <- queue_source_document(catalog)
   job <- acquisition_queue_enqueue(catalog, "download", "document", refs$document$document_ref_id)
   worker <- withr::local_tempfile(fileext = ".R")
@@ -361,8 +372,10 @@ test_that("concurrent stale publication keeps one canonical file", {
   writeLines(c(
     "args <- commandArgs(trailingOnly = TRUE)",
     "root <- args[[1L]]; db <- args[[2L]]; cache <- args[[3L]]; output <- args[[4L]]; ready <- args[[5L]]; worker_id <- args[[6L]]; writes <- args[[7L]]",
+    "source(file.path(root, 'R', 'utils_screen.R'), local = globalenv())",
     "source(file.path(root, 'R', 'acquisition_catalog.R'), local = globalenv())",
     "source(file.path(root, 'R', 'acquisition_queue.R'), local = globalenv())",
+    "source(file.path(root, 'R', 'acquisition_storage.R'), local = globalenv())",
     "testthat::local_mocked_bindings(download_to_cache = function(url, country, document_id, cache_dir, overwrite = FALSE) {",
     "  destination <- planscanR::cache_path(url, country, document_id, cache_dir = cache_dir)",
     "  dir.create(dirname(destination), recursive = TRUE, showWarnings = FALSE)",
