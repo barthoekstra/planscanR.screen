@@ -4,7 +4,7 @@
 # the small catalog policy layer: registered roots, versioned settings,
 # reservations, and durable relocation requests.
 
-acquisition_storage_schema_version <- 1L
+acquisition_storage_schema_version <- 2L
 
 acquisition_storage_abort <- function(
   message,
@@ -251,18 +251,35 @@ acquisition_storage_rebuild_queue <- function(conn) {
 acquisition_storage_rebuild_queue_dependents <- function(conn) {
   if ("acquisition_storage_reservations" %in% DBI::dbListTables(conn)) {
     DBI::dbExecute(conn, "ALTER TABLE acquisition_storage_reservations RENAME TO acquisition_storage_reservations_old")
+    old_fields <- DBI::dbListFields(conn, "acquisition_storage_reservations_old")
     DBI::dbExecute(conn, paste(
       "CREATE TABLE acquisition_storage_reservations (",
       "reservation_id TEXT PRIMARY KEY, job_id TEXT NOT NULL UNIQUE, root_id TEXT NOT NULL,",
       "bytes REAL NOT NULL CHECK (bytes >= 0), state TEXT NOT NULL CHECK (state IN ('held', 'released')),",
-      "created_at TEXT NOT NULL, released_at TEXT,",
+      "created_at TEXT NOT NULL, released_at TEXT, lease_token TEXT,",
+      "written_bytes REAL NOT NULL DEFAULT 0 CHECK (written_bytes >= 0),",
+      "pending_bytes REAL NOT NULL DEFAULT 0 CHECK (pending_bytes >= 0),",
+      "advertised_bytes REAL, phase TEXT NOT NULL DEFAULT 'stream' CHECK (phase IN ('stream', 'promotion')),",
       "FOREIGN KEY (root_id) REFERENCES acquisition_storage_roots(root_id),",
       "FOREIGN KEY (job_id) REFERENCES acquisition_jobs(job_id))"
     ))
+    fields <- c(
+      "reservation_id", "job_id", "root_id", "bytes", "state", "created_at", "released_at",
+      "lease_token", "written_bytes", "pending_bytes", "advertised_bytes", "phase"
+    )
+    expressions <- vapply(fields, function(field) {
+      if (field %in% old_fields) field else switch(field,
+        lease_token = "NULL",
+        written_bytes = "0",
+        pending_bytes = "0",
+        advertised_bytes = "NULL",
+        phase = "'stream'",
+        "NULL"
+      )
+    }, character(1))
     DBI::dbExecute(conn, paste(
-      "INSERT INTO acquisition_storage_reservations",
-      "SELECT reservation_id, job_id, root_id, bytes, state, created_at, released_at",
-      "FROM acquisition_storage_reservations_old"
+      "INSERT INTO acquisition_storage_reservations (", paste(fields, collapse = ", "), ")",
+      "SELECT", paste(expressions, collapse = ", "), "FROM acquisition_storage_reservations_old"
     ))
     DBI::dbExecute(conn, "DROP TABLE acquisition_storage_reservations_old")
   }
@@ -351,7 +368,10 @@ acquisition_storage_apply_migration <- function(conn, version) {
       "CREATE TABLE IF NOT EXISTS acquisition_storage_reservations (",
       "reservation_id TEXT PRIMARY KEY, job_id TEXT NOT NULL UNIQUE, root_id TEXT NOT NULL,",
       "bytes REAL NOT NULL CHECK (bytes >= 0), state TEXT NOT NULL CHECK (state IN ('held', 'released')),",
-      "created_at TEXT NOT NULL, released_at TEXT,",
+      "created_at TEXT NOT NULL, released_at TEXT, lease_token TEXT,",
+      "written_bytes REAL NOT NULL DEFAULT 0 CHECK (written_bytes >= 0),",
+      "pending_bytes REAL NOT NULL DEFAULT 0 CHECK (pending_bytes >= 0),",
+      "advertised_bytes REAL, phase TEXT NOT NULL DEFAULT 'stream' CHECK (phase IN ('stream', 'promotion')),",
       "FOREIGN KEY (root_id) REFERENCES acquisition_storage_roots(root_id),",
       "FOREIGN KEY (job_id) REFERENCES acquisition_jobs(job_id))"
     )
@@ -400,8 +420,45 @@ acquisition_storage_migrate <- function(conn, busy_timeout = 5000L) {
     }, busy_timeout = busy_timeout)
   }
   acquisition_storage_upgrade_ingest_queue(conn, busy_timeout)
+  acquisition_storage_upgrade_reservation_schema(conn, busy_timeout)
   acquisition_storage_ensure_default_root_connection(conn)
   invisible(acquisition_storage_schema_version)
+}
+
+acquisition_storage_upgrade_reservation_schema <- function(conn, busy_timeout = 5000L) {
+  # Keep this additive for catalogs created by ACQ-2c before dynamic download
+  # reservations existed. SQLite cannot add a CHECK constraint in place, so
+  # the new fields are deliberately nullable/defaulted and validated by the
+  # coordinator transaction below.
+  additions <- list(
+    lease_token = "ALTER TABLE acquisition_storage_reservations ADD COLUMN lease_token TEXT",
+    written_bytes = "ALTER TABLE acquisition_storage_reservations ADD COLUMN written_bytes REAL NOT NULL DEFAULT 0",
+    pending_bytes = "ALTER TABLE acquisition_storage_reservations ADD COLUMN pending_bytes REAL NOT NULL DEFAULT 0",
+    advertised_bytes = "ALTER TABLE acquisition_storage_reservations ADD COLUMN advertised_bytes REAL",
+    phase = "ALTER TABLE acquisition_storage_reservations ADD COLUMN phase TEXT NOT NULL DEFAULT 'stream'"
+  )
+  acquisition_catalog_transaction_connection(conn, function(connection) {
+    fields <- DBI::dbListFields(connection, "acquisition_storage_reservations")
+    missing <- names(additions)[!names(additions) %in% fields]
+    if (length(missing) > 0L) {
+      for (field in missing) DBI::dbExecute(connection, additions[[field]])
+      if ("acquisition_storage_schema_migrations" %in% DBI::dbListTables(connection)) {
+        DBI::dbExecute(
+          connection,
+          "INSERT OR IGNORE INTO acquisition_storage_schema_migrations(version, applied_at) VALUES (?, ?)",
+          params = list(2L, acquisition_catalog_now())
+        )
+      }
+    } else if ("acquisition_storage_schema_migrations" %in% DBI::dbListTables(connection)) {
+      DBI::dbExecute(
+        connection,
+        "INSERT OR IGNORE INTO acquisition_storage_schema_migrations(version, applied_at) VALUES (?, ?)",
+        params = list(2L, acquisition_catalog_now())
+      )
+    }
+    invisible(TRUE)
+  }, busy_timeout = busy_timeout)
+  invisible(TRUE)
 }
 
 acquisition_storage_ensure_default_root_connection <- function(conn) {
@@ -773,6 +830,248 @@ acquisition_storage_root_for_job_connection <- function(conn, job) {
   acquisition_storage_active_root_connection(conn, purpose = "downloads")
 }
 
+acquisition_storage_reservation_initial_bytes <- function(conn, job) {
+  bytes <- acquisition_storage_job_estimate(job, conn)
+  # Start each download with a bounded budget. Estimates and HEAD values are
+  # advisory; the guard grows this lease before a chunk or duplicate copy is
+  # written. Keeping the initial lease small allows two downloads to overlap.
+  bytes <- max(64 * 1024, min(bytes, 4 * 1024^2))
+  if (identical(as.character(job$kind[[1L]]), "download") &&
+    isTRUE(getOption("planscanR.content_addressed_downloads", FALSE))) {
+    bytes <- bytes * 2
+  }
+  acquisition_storage_bytes(bytes, "reservation_bytes", allow_zero = FALSE)
+}
+
+acquisition_storage_reservation_growth_bytes <- function(conn) {
+  configured <- acquisition_storage_setting_value_connection(
+    conn, "default_estimate_bytes", 4 * 1024^2
+  )
+  configured <- suppressWarnings(as.numeric(configured))
+  if (length(configured) != 1L || is.na(configured) || !is.finite(configured) || configured <= 0) {
+    configured <- 4 * 1024^2
+  }
+  # Keep a small window ahead of an unknown-size transfer. The next guard call
+  # grows it before another chunk is written, without reserving all headroom.
+  max(64 * 1024, min(configured, 4 * 1024^2))
+}
+
+acquisition_storage_guard_values <- function(bytes_written, advertised_bytes) {
+  written <- suppressWarnings(as.numeric(bytes_written))
+  advertised <- suppressWarnings(as.numeric(advertised_bytes))
+  if (length(written) != 1L || is.na(written) || !is.finite(written) || written < 0) {
+    return(NULL)
+  }
+  if (length(advertised) != 1L || is.na(advertised) || !is.finite(advertised) || advertised < 0) {
+    advertised <- NA_real_
+  }
+  list(written = written, advertised = advertised)
+}
+
+acquisition_storage_reservation_current_connection <- function(conn, job_id, lease_token) {
+  now <- acquisition_catalog_now()
+  job <- acquisition_catalog_one(
+    conn,
+    paste(
+      "SELECT job_id, state, lease_token, lease_expires_at FROM acquisition_jobs",
+      "WHERE job_id = ? AND state = 'running' AND lease_token = ? AND lease_expires_at > ?"
+    ),
+    list(as.character(job_id), as.character(lease_token), now)
+  )
+  if (is.null(job)) return(NULL)
+  reservation <- acquisition_catalog_one(
+    conn,
+    paste(
+      "SELECT reservation_id, job_id, root_id, bytes, written_bytes, pending_bytes, advertised_bytes, phase",
+      "FROM acquisition_storage_reservations WHERE job_id = ? AND state = 'held'",
+      "AND (lease_token IS NULL OR lease_token = ?)"
+    ),
+    list(as.character(job_id), as.character(lease_token))
+  )
+  if (is.null(reservation)) return(NULL)
+  list(job = job, reservation = reservation, now = now)
+}
+
+acquisition_storage_reservation_lease_valid <- function(catalog, job_id, lease_token) {
+  valid <- tryCatch({
+    conn <- acquisition_catalog_connection(catalog)
+    now <- acquisition_catalog_now()
+    !is.null(acquisition_catalog_one(
+      conn,
+      paste(
+        "SELECT r.reservation_id FROM acquisition_storage_reservations r",
+        "JOIN acquisition_jobs j ON j.job_id = r.job_id",
+        "WHERE r.job_id = ? AND r.state = 'held' AND r.lease_token = ?",
+        "AND j.state = 'running' AND j.lease_token = ? AND j.lease_expires_at > ?"
+      ),
+      list(as.character(job_id), as.character(lease_token), as.character(lease_token), now)
+    ))
+  }, error = function(error) FALSE)
+  isTRUE(valid)
+}
+
+acquisition_storage_reservation_update_connection <- function(
+  conn,
+  job_id,
+  lease_token,
+  bytes_written,
+  advertised_bytes = NA_real_,
+  phase = "stream",
+  content_addressed = FALSE,
+  pending_bytes = 0
+) {
+  phase <- match.arg(phase, c("stream", "publish", "promotion"))
+  values <- acquisition_storage_guard_values(bytes_written, advertised_bytes)
+  if (is.null(values)) return(list(ok = FALSE, reason = "invalid-storage-guard-bytes"))
+  pending_bytes <- suppressWarnings(as.numeric(pending_bytes))
+  if (length(pending_bytes) != 1L || is.na(pending_bytes) ||
+    !is.finite(pending_bytes) || pending_bytes < 0) {
+    return(list(ok = FALSE, reason = "invalid-storage-guard-pending-bytes"))
+  }
+  current <- acquisition_storage_reservation_current_connection(conn, job_id, lease_token)
+  if (is.null(current)) return(list(ok = FALSE, reason = "lease-stale"))
+  reservation <- current$reservation
+  root <- acquisition_catalog_one(
+    conn,
+    "SELECT * FROM acquisition_storage_roots WHERE root_id = ? AND active = 1",
+    list(as.character(reservation$root_id[[1L]]))
+  )
+  if (is.null(root)) return(list(ok = FALSE, reason = "storage-root-inactive"))
+  current_bytes <- suppressWarnings(as.numeric(reservation$bytes[[1L]]))
+  if (length(current_bytes) != 1L || is.na(current_bytes) || current_bytes < 0) {
+    return(list(ok = FALSE, reason = "invalid-storage-reservation"))
+  }
+  prior_written <- suppressWarnings(as.numeric(reservation$written_bytes[[1L]]))
+  if (length(prior_written) != 1L || is.na(prior_written) || prior_written < 0) prior_written <- 0
+  prior_pending <- suppressWarnings(as.numeric(reservation$pending_bytes[[1L]]))
+  if (length(prior_pending) != 1L || is.na(prior_pending) || prior_pending < 0) prior_pending <- 0
+  prior_advertised <- suppressWarnings(as.numeric(reservation$advertised_bytes[[1L]]))
+  if (length(prior_advertised) != 1L || is.na(prior_advertised) || prior_advertised < 0) prior_advertised <- NA_real_
+  written <- max(values$written, prior_written)
+  advertised <- if (is.na(values$advertised)) prior_advertised else {
+    if (is.na(prior_advertised)) values$advertised else max(prior_advertised, values$advertised)
+  }
+  next_bytes <- current_bytes
+  next_phase <- as.character(reservation$phase[[1L]] %||% "stream")
+  stream_budget <- 0
+  if (phase %in% c("stream", "publish")) {
+    # The live filesystem free-space value already includes these bytes. Remove
+    # them from the held future budget before deciding whether it must grow.
+    delta <- max(0, written - prior_written)
+    next_bytes <- max(0, current_bytes - delta)
+    growth <- acquisition_storage_reservation_growth_bytes(conn)
+    source_remaining <- if (is.na(advertised)) {
+      pending_bytes + growth
+    } else {
+      max(pending_bytes, max(0, advertised - written))
+    }
+    duplicate_remaining <- if (isTRUE(content_addressed)) {
+      if (is.na(advertised)) {
+        max(growth, written + pending_bytes)
+      } else {
+        max(advertised, written + pending_bytes)
+      }
+    } else {
+      0
+    }
+    slack <- if (is.na(advertised)) 0 else growth
+    next_bytes <- max(next_bytes, source_remaining + duplicate_remaining + slack)
+    stream_budget <- max(0, next_bytes - duplicate_remaining)
+    if (isTRUE(content_addressed)) {
+      # A future source increment x needs both x bytes for its stream and a
+      # retained copy of max(advertised, written + x). These two bounds are a
+      # conservative allowance for the callback cache: one assumes the
+      # advertised size remains authoritative, the other protects an
+      # underreported or unknown source whose duplicate grows with x.
+      duplicate_floor <- if (is.na(advertised)) written else max(advertised, written)
+      stream_budget <- min(
+        max(0, next_bytes - duplicate_floor),
+        max(0, (next_bytes - written) / 2)
+      )
+    }
+    next_phase <- "stream"
+  } else if (identical(phase, "promotion")) {
+    # Cached sources have no stream bytes to account for. Reserve the retained
+    # second copy before file.copy(); fresh streams already reserved it.
+    # `bytes_written` describes the already materialized source. The pending
+    # amount is the retained copy being staged; consume that amount only after
+    # the post-copy fence reports pending = 0.
+    promoted <- max(0, prior_pending - pending_bytes)
+    next_bytes <- max(0, current_bytes - promoted)
+    next_bytes <- max(next_bytes, pending_bytes + acquisition_storage_reservation_growth_bytes(conn))
+    stream_budget <- 0
+    next_phase <- "promotion"
+  }
+  capacity <- acquisition_storage_capacity(as.character(root$root_path[[1L]]))
+  held_other <- DBI::dbGetQuery(
+    conn,
+    paste(
+      "SELECT COALESCE(SUM(bytes), 0) AS bytes FROM acquisition_storage_reservations",
+      "WHERE state = 'held' AND job_id <> ?"
+    ),
+    params = list(as.character(job_id))
+  )$bytes[[1L]]
+  reserve <- max(
+    as.numeric(root$reserve_bytes[[1L]]),
+    as.numeric(capacity$total_bytes) * as.numeric(root$reserve_fraction[[1L]])
+  )
+  if (!is.finite(next_bytes) || next_bytes < 0 ||
+    as.numeric(capacity$free_bytes) - as.numeric(held_other) - next_bytes < reserve) {
+    return(list(
+      ok = FALSE,
+      reason = "disk-reserve-exhausted",
+      available_bytes = as.numeric(capacity$free_bytes),
+      reserved_bytes = as.numeric(held_other),
+      requested_bytes = next_bytes
+    ))
+  }
+  changed <- DBI::dbExecute(
+    conn,
+    paste(
+      "UPDATE acquisition_storage_reservations SET bytes = ?, written_bytes = ?,",
+      "pending_bytes = ?, advertised_bytes = ?, phase = ? WHERE job_id = ? AND state = 'held'",
+      "AND lease_token = ?"
+    ),
+    params = list(
+      next_bytes, written, pending_bytes, advertised, next_phase,
+      as.character(job_id), as.character(lease_token)
+    )
+  )
+  if (changed != 1L) return(list(ok = FALSE, reason = "lease-stale"))
+  list(
+    ok = TRUE,
+    bytes = next_bytes,
+    written_bytes = written,
+    advertised_bytes = advertised,
+    stream_budget_bytes = stream_budget,
+    root_id = as.character(root$root_id[[1L]])
+  )
+}
+
+acquisition_storage_reservation_update <- function(
+  catalog,
+  job_id,
+  lease_token,
+  bytes_written,
+  advertised_bytes = NA_real_,
+  phase = "stream",
+  content_addressed = FALSE,
+  pending_bytes = 0
+) {
+  acquisition_catalog_transaction(catalog, function(conn) {
+    acquisition_storage_reservation_update_connection(
+      conn,
+      job_id,
+      lease_token,
+      bytes_written,
+      advertised_bytes,
+      phase,
+      content_addressed,
+      pending_bytes
+    )
+  })
+}
+
 acquisition_storage_try_reserve_connection <- function(conn, job) {
   if (!identical(as.character(job$kind), "download") && !identical(as.character(job$kind), "migrate_storage")) {
     return(list(ok = TRUE, skipped = TRUE))
@@ -794,20 +1093,15 @@ acquisition_storage_try_reserve_connection <- function(conn, job) {
   )
   is_download <- identical(as.character(job$kind), "download")
   # `estimated_bytes` is advisory catalog metadata rather than a trusted
-  # Content-Length. Every production download therefore reserves the live
-  # headroom, even when an estimate is present. This keeps an underestimate
-  # from becoming a second per-file ceiling and lets the downloader stream up
-  # to the same disk boundary. It intentionally serializes downloads on a
-  # root; a later queued job remains queued and can claim after release.
+  # Content-Length. A download starts with a small bounded lease and grows it
+  # through the guard before each materialized chunk or retained copy. The
+  # lease is never a per-file transfer ceiling, and two claims can coexist on
+  # the same root while the filesystem floor remains protected.
   if (is_download) {
-    # Leave a byte beyond the configured reserve to avoid rejecting an exact
-    # boundary because `reserve_fraction` is represented as a fractional
-    # double while `df` reports whole filesystem blocks.
-    bytes <- max(0, available - as.numeric(held) - reserve - 1)
+    bytes <- acquisition_storage_reservation_initial_bytes(conn, job)
   } else {
-    # Storage migration keeps the versioned estimate/default behavior because
-    # those jobs move already materialized files and do not use the download
-    # stream's historical 50 MiB setting.
+    # Storage migration keeps its estimate semantics because it copies
+    # already-materialized files.
     bytes <- acquisition_storage_job_estimate(job, conn)
   }
   if (!is.finite(bytes) || bytes <= 0) {
@@ -828,21 +1122,44 @@ acquisition_storage_try_reserve_connection <- function(conn, job) {
   DBI::dbExecute(
     conn,
     paste(
-      "INSERT INTO acquisition_storage_reservations (reservation_id, job_id, root_id, bytes, state, created_at)",
-      "VALUES (?, ?, ?, ?, 'held', ?) ON CONFLICT(job_id) DO UPDATE SET root_id = excluded.root_id,",
-      "bytes = excluded.bytes, state = 'held', created_at = excluded.created_at, released_at = NULL"
+      "INSERT INTO acquisition_storage_reservations (reservation_id, job_id, root_id, bytes, state, created_at,",
+      "lease_token, written_bytes, pending_bytes, advertised_bytes, phase)",
+      "VALUES (?, ?, ?, ?, 'held', ?, NULL, 0, 0, NULL, 'stream')",
+      "ON CONFLICT(job_id) DO UPDATE SET root_id = excluded.root_id,",
+      "bytes = excluded.bytes, state = 'held', created_at = excluded.created_at, released_at = NULL,",
+      "lease_token = NULL, written_bytes = 0, pending_bytes = 0, advertised_bytes = NULL, phase = 'stream'"
     ),
     params = list(paste0("reservation-", as.character(job$job_id[[1L]])), as.character(job$job_id[[1L]]), as.character(root$root_id[[1L]]), bytes, now)
   )
   list(ok = TRUE, root_id = as.character(root$root_id[[1L]]), root_path = as.character(root$root_path[[1L]]), bytes = bytes, available_bytes = available, reserve_bytes = reserve)
 }
 
-acquisition_storage_release_connection <- function(conn, job_id) {
-  DBI::dbExecute(
+acquisition_storage_bind_reservation_connection <- function(conn, job_id, lease_token) {
+  changed <- DBI::dbExecute(
     conn,
-    "UPDATE acquisition_storage_reservations SET state = 'released', released_at = ? WHERE job_id = ? AND state = 'held'",
-    params = list(acquisition_catalog_now(), as.character(job_id))
+    paste(
+      "UPDATE acquisition_storage_reservations SET lease_token = ?",
+      "WHERE job_id = ? AND state = 'held' AND lease_token IS NULL"
+    ),
+    params = list(as.character(lease_token), as.character(job_id))
   )
+  if (changed != 1L) {
+    return(list(ok = FALSE, reason = "storage-reservation-lease-bind-failed"))
+  }
+  list(ok = TRUE)
+}
+
+acquisition_storage_release_connection <- function(conn, job_id, lease_token = NULL) {
+  sql <- paste(
+    "UPDATE acquisition_storage_reservations SET state = 'released', released_at = ?",
+    "WHERE job_id = ? AND state = 'held'"
+  )
+  params <- list(acquisition_catalog_now(), as.character(job_id))
+  if (!is.null(lease_token)) {
+    sql <- paste(sql, "AND lease_token = ?")
+    params <- c(params, list(as.character(lease_token)))
+  }
+  DBI::dbExecute(conn, sql, params = params)
   invisible(TRUE)
 }
 

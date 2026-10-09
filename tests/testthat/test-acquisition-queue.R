@@ -414,7 +414,9 @@ test_that("concurrent stale publication keeps one canonical file", {
     if (Sys.time() > deadline + 15) stop("publication workers did not finish")
     Sys.sleep(0.05)
   }
-  expect_true(all(vapply(outputs, function(path) identical(readLines(path)[[1L]], "succeeded"), logical(1))))
+  outcomes <- vapply(outputs, function(path) readLines(path)[[1L]], character(1))
+  expect_true(sum(outcomes == "succeeded") == 1L)
+  expect_true(sum(outcomes == "retryable") == 1L)
   expect_length(readLines(writes), 1L)
   files <- acquisition_catalog_files(catalog, refs$document$document_ref_id)
   expect_equal(nrow(files), 1L)

@@ -4,6 +4,7 @@
 # and file work belongs to the worker callback, after a claim has committed.
 
 acquisition_queue_default_host_concurrency <- 2L
+acquisition_queue_default_download_concurrency <- 2L
 acquisition_queue_default_job_kinds <- c("discover", "download", "migrate_storage")
 
 acquisition_queue_abort <- function(message, class = "planscanR_error_acquisition_queue") {
@@ -235,7 +236,9 @@ acquisition_queue_recover_expired_connection <- function(conn, now) {
       )
     )
     if (exists("acquisition_storage_release_connection", mode = "function")) {
-      acquisition_storage_release_connection(conn, row$job_id[[1L]])
+      acquisition_storage_release_connection(
+        conn, row$job_id[[1L]], row$lease_token[[1L]]
+      )
       acquisition_storage_mark_complete_connection(conn, row$job_id[[1L]], next_state)
     }
   }
@@ -541,6 +544,7 @@ acquisition_queue_claim <- function(
     acquisition_queue_recover_expired_connection(conn, now)
     acquisition_queue_sync_host_counts(conn, now)
     kind_sql <- paste(rep("?", length(kinds)), collapse = ", ")
+    reservation <- NULL
     candidate <- acquisition_catalog_one(
       conn,
       paste(
@@ -551,6 +555,11 @@ acquisition_queue_claim <- function(
           "AND COALESCE(a.error_category, '') <> 'migration-batch-continue') < j.max_attempts) ",
           "OR (j.kind <> 'migrate_storage' AND j.attempt_count < j.max_attempts))"),
         "AND ", if (controls_available) acquisition_controls_pause_guard_sql() else "1 = 1",
+        paste0(
+          "AND (j.kind <> 'download' OR (SELECT COUNT(*) FROM acquisition_jobs active ",
+          "WHERE active.kind = 'download' AND active.state = 'running' ",
+          "AND active.lease_expires_at > ?) < ?)"
+        ),
         "AND (j.host IS NULL OR ((h.cooldown_until IS NULL OR h.cooldown_until <= ?) AND h.active_count < h.max_concurrency))",
         # Preserve explicit priority tiers. At one tier, a ready download
         # claims before discovery so newly found files make progress without
@@ -558,7 +567,7 @@ acquisition_queue_claim <- function(
         "ORDER BY j.priority DESC, CASE WHEN j.kind = 'download' THEN 0 ELSE 1 END,",
         "j.available_at, j.created_at, j.job_id LIMIT 1"
       ),
-      c(as.list(kinds), list(now, now))
+      c(as.list(kinds), list(now, now, acquisition_queue_default_download_concurrency, now))
     )
     if (is.null(candidate)) {
       return(list(ok = FALSE, status = "empty"))
@@ -611,6 +620,13 @@ acquisition_queue_claim <- function(
       ),
       params = list(attempt_no, token, worker_id, expires, now, job_id)
     )
+    if (!is.null(reservation) && !is.null(reservation$root_id) &&
+      exists("acquisition_storage_bind_reservation_connection", mode = "function")) {
+      bound <- acquisition_storage_bind_reservation_connection(conn, job_id, token)
+      if (!isTRUE(bound$ok)) {
+        acquisition_queue_abort(bound$reason %||% "Could not bind the storage reservation to the lease.")
+      }
+    }
     if (exists("acquisition_storage_mark_running_connection", mode = "function")) {
       acquisition_storage_mark_running_connection(conn, job_id)
     }
@@ -1161,7 +1177,7 @@ acquisition_queue_complete <- function(
       )
     )
     if (exists("acquisition_storage_release_connection", mode = "function")) {
-      acquisition_storage_release_connection(conn, job_id)
+      acquisition_storage_release_connection(conn, job_id, lease_token)
       acquisition_storage_mark_complete_connection(conn, job_id, next_state)
     }
     if (!is.null(cooldown_seconds) && !is.na(job$host[[1L]])) {
@@ -1942,20 +1958,103 @@ acquisition_queue_default_download <- function(
     Inf
   }
   content_addressed <- isTRUE(getOption("planscanR.content_addressed_downloads", FALSE))
-  # The claim's reservation is the production transfer ceiling. Download
-  # claims reserve live filesystem headroom because persisted estimates are
-  # advisory and must not cap a response that turns out to be larger. Do not
-  # apply planscanR.max_file_size_mb here: that historical option is useful for
-  # direct leaf callers but must not cap queued campaign acquisition.
-  # Content-addressed mode retains two copies, so divide the reservation back
-  # to the one-transfer ceiling here.
-  reservation_transfer_cap <- reservation_cap_bytes / if (content_addressed) 2 else 1
-  transfer_cap_bytes <- reservation_transfer_cap
-  if (!is.finite(transfer_cap_bytes) || transfer_cap_bytes <= 0) {
-    return(list(status = "blocked", error_category = "missing-transfer-cap", error_message = "A finite transfer ceiling bound to the storage reservation is required."))
-  }
-  max_file_size_mb <- transfer_cap_bytes / (1024^2)
   download_fn <- planscanR::download_to_cache
+  download_formals <- tryCatch(names(formals(download_fn)), error = function(error) character())
+  has_storage_guard <- "storage_guard" %in% download_formals || "..." %in% download_formals
+  is_installed_leaf <- identical(environment(download_fn), asNamespace("planscanR"))
+  if (!has_storage_guard && is_installed_leaf) {
+    return(list(
+      status = "blocked",
+      error_category = "missing-storage-guard",
+      error_message = "The installed planscanR downloader cannot enforce the lease-fenced storage reservation."
+    ))
+  }
+  # A legacy injected handler still receives the historical finite cap so
+  # existing offline tests and direct integrations remain compatible. The
+  # installed acquisition path uses the guard and an unbounded leaf option;
+  # its reservation grows before every materialized chunk or retained copy.
+  fallback_transfer_cap <- reservation_cap_bytes / if (content_addressed) 2 else 1
+  if (!has_storage_guard && (!is.finite(fallback_transfer_cap) || fallback_transfer_cap <= 0)) {
+    return(list(
+      status = "blocked",
+      error_category = "missing-transfer-cap",
+      error_message = "A legacy downloader without a storage guard needs a finite reservation-derived cap."
+    ))
+  }
+  guard_state <- new.env(parent = emptyenv())
+  guard_state$checked_through <- 0
+  guard_state$last_advertised <- NA_real_
+  guard_state$last_phase <- NA_character_
+  guard_state$checkpoint_bytes <- 64 * 1024^2
+  storage_guard <- function(
+    cumulative_bytes,
+    advertised_size = NA_real_,
+    phase = "stream",
+    pending_bytes = 0
+  ) {
+    cumulative_bytes <- suppressWarnings(as.numeric(cumulative_bytes))
+    advertised_size <- suppressWarnings(as.numeric(advertised_size))
+    pending_bytes <- suppressWarnings(as.numeric(pending_bytes))
+    if (length(cumulative_bytes) != 1L || is.na(cumulative_bytes) ||
+      !is.finite(cumulative_bytes) || cumulative_bytes < 0 ||
+      length(pending_bytes) != 1L || is.na(pending_bytes) ||
+      !is.finite(pending_bytes) || pending_bytes < 0) {
+      return(list(ok = FALSE, reason = "invalid-storage-guard-bytes"))
+    }
+    if (length(advertised_size) != 1L || is.na(advertised_size) ||
+      !is.finite(advertised_size) || advertised_size < 0) {
+      advertised_size <- NA_real_
+    }
+    phase <- match.arg(phase, c("stream", "publish", "promotion"))
+    if (!acquisition_storage_reservation_lease_valid(
+      catalog, job$job_id, job$lease_token
+    )) {
+      return(list(ok = FALSE, reason = "lease-stale"))
+    }
+    advertised_changed <- !is.na(advertised_size) &&
+      (is.na(guard_state$last_advertised) || advertised_size > guard_state$last_advertised)
+    checkpoint_needed <- phase != "stream" || advertised_changed ||
+      cumulative_bytes + pending_bytes > guard_state$checked_through
+    if (!checkpoint_needed) {
+      return(list(ok = TRUE, skipped = TRUE))
+    }
+    if (is.function(job$heartbeat)) {
+      heartbeat <- job$heartbeat()
+      if (!isTRUE(heartbeat$ok)) {
+        return(list(ok = FALSE, reason = "lease-stale"))
+      }
+    }
+    checked <- acquisition_storage_reservation_update(
+      catalog,
+      job$job_id,
+      job$lease_token,
+      bytes_written = cumulative_bytes,
+      advertised_bytes = advertised_size,
+      phase = phase,
+      content_addressed = content_addressed,
+      pending_bytes = pending_bytes
+    )
+    if (!isTRUE(checked$ok)) {
+      return(checked)
+    }
+    guard_state$last_advertised <- if (is.na(advertised_size)) {
+      guard_state$last_advertised
+    } else {
+      max(guard_state$last_advertised, advertised_size, na.rm = TRUE)
+    }
+    guard_state$last_phase <- phase
+    # `bytes` is the unspent future budget after this checkpoint. Keep all
+    # small callbacks inside that lease and reconcile at a 64 MiB boundary.
+    held <- suppressWarnings(as.numeric(
+      checked$stream_budget_bytes %||% checked$bytes
+    ))
+    guard_state$checked_through <- if (length(held) == 1L && is.finite(held) && held >= 0) {
+      cumulative_bytes + min(held, guard_state$checkpoint_bytes)
+    } else {
+      cumulative_bytes
+    }
+    checked
+  }
   download_args <- list(
     url,
     country,
@@ -1963,15 +2062,19 @@ acquisition_queue_default_download <- function(
     cache_dir = cache_root,
     overwrite = FALSE
   )
-  # Keep the production downloader's hard cap while allowing older injected
-  # offline handlers that predate the cap argument to remain valid.
-  if ("..." %in% names(formals(download_fn)) ||
-    "max_file_size_mb" %in% names(formals(download_fn))) {
-    download_args$max_file_size_mb <- max_file_size_mb
+  if ("..." %in% download_formals || "max_file_size_mb" %in% download_formals) {
+    download_args$max_file_size_mb <- if (has_storage_guard) {
+      Inf
+    } else {
+      fallback_transfer_cap / (1024^2)
+    }
   }
   if ("content_addressed" %in% names(formals(download_fn))) {
     download_args$content_addressed <- content_addressed
     download_args$storage_root_id <- root_id
+  }
+  if (has_storage_guard) {
+    download_args$storage_guard <- storage_guard
   }
   # Large acquisition transfers must not inherit planscanR's historical
   # 60-second total request timeout. Scope the unbounded total timeout to this
@@ -1981,11 +2084,8 @@ acquisition_queue_default_download <- function(
   previous_max_size <- getOption("planscanR.max_file_size_mb")
   had_timeout_option <- "planscanR.timeout" %in% names(options())
   previous_timeout <- getOption("planscanR.timeout")
-  # Keep compatibility with an older leaf that does not expose the explicit
-  # cap argument: its package option is scoped to the same reservation-derived
-  # ceiling rather than falling back to 50 MiB or the worker's default.
   options(
-    planscanR.max_file_size_mb = max_file_size_mb,
+    planscanR.max_file_size_mb = if (has_storage_guard) Inf else fallback_transfer_cap / (1024^2),
     planscanR.timeout = Inf
   )
   on.exit(
@@ -2015,6 +2115,28 @@ acquisition_queue_default_download <- function(
     }
     size_bytes <- as.numeric(result$size_bytes[[1L]])
     sha256 <- as.character(result$sha256[[1L]])
+    fence_phase <- if (content_addressed) "promotion" else "publish"
+    publication_fence <- if (has_storage_guard) {
+      storage_guard(size_bytes, size_bytes, phase = fence_phase, pending_bytes = 0)
+    } else {
+      acquisition_storage_reservation_update(
+        catalog,
+        job$job_id,
+        job$lease_token,
+        bytes_written = size_bytes,
+        advertised_bytes = size_bytes,
+        phase = fence_phase,
+        content_addressed = content_addressed,
+        pending_bytes = 0
+      )
+    }
+    if (!isTRUE(publication_fence$ok)) {
+      return(list(
+        status = "retryable",
+        error_category = publication_fence$reason %||% "lease-stale",
+        error_message = "The download lease or storage reservation was no longer valid before catalog publication."
+      ))
+    }
     source_local_path <- if ("source_local_path" %in% names(result)) as.character(result$source_local_path[[1L]]) else local_path
     if (content_addressed) {
       source_receipt <- tryCatch(
