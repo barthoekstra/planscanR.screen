@@ -5,6 +5,28 @@
 # outside Shiny. `--idle` keeps a worker process alive between empty claims so
 # systemd can supervise a stable two-to-four-process pool.
 
+# Idle supervised workers wait out transient catalog contention. Failed opens
+# close their connection; retry only the catalog's typed SQLite busy error.
+acquisition_worker_open_catalog <- function(
+  path, retry = FALSE,
+  opener = planscanR.screen::acquisition_catalog_open,
+  pause = Sys.sleep
+) {
+  repeat {
+    catalog <- tryCatch(
+      opener(path, busy_timeout = 30000L),
+      planscanR_error_acquisition_busy = function(error) {
+        if (!isTRUE(retry)) stop(error)
+        message("Acquisition catalog is busy; retrying startup in 15 seconds: ",
+                conditionMessage(error))
+        NULL
+      }
+    )
+    if (!is.null(catalog)) return(catalog)
+    pause(15)
+  }
+}
+
 main <- function() {
 args <- commandArgs(trailingOnly = TRUE)
 
@@ -50,7 +72,7 @@ if (!requireNamespace("planscanR.screen", quietly = TRUE)) {
   stop("Install planscanR.screen before running the acquisition worker.", call. = FALSE)
 }
 
-catalog <- planscanR.screen::acquisition_catalog_open(catalog_path)
+catalog <- acquisition_worker_open_catalog(catalog_path, retry = idle)
 # Queued downloads receive a reservation-derived ceiling from the worker
 # claim. Keep the leaf option unbounded in this production process so a
 # historical 50 MiB default cannot become an independent acquisition limit.
