@@ -1898,8 +1898,13 @@ acquisition_queue_default_download <- function(
   job,
   catalog,
   lock_timeout = 60,
-  sidecar_sync_fn = acquisition_queue_sync_sidecar_row
+  sidecar_sync_fn = acquisition_queue_sync_sidecar_row,
+  max_file_size_mb = getOption("planscanR.acquisition_max_file_size_mb", Inf)
 ) {
+  if (!is.numeric(max_file_size_mb) || length(max_file_size_mb) != 1L ||
+      is.na(max_file_size_mb) || max_file_size_mb <= 0) {
+    acquisition_queue_abort("max_file_size_mb must be a positive MiB limit or Inf.")
+  }
   if (!requireNamespace("filelock", quietly = TRUE)) {
     return(list(status = "blocked", error_category = "missing-filelock", error_message = "The filelock package is required for canonical publication."))
   }
@@ -1971,7 +1976,7 @@ acquisition_queue_default_download <- function(
   }
   # A legacy injected handler still receives the historical finite cap so
   # existing offline tests and direct integrations remain compatible. The
-  # installed acquisition path uses the guard and an unbounded leaf option;
+  # installed acquisition path also honors the explicit per-file policy cap;
   # its reservation grows before every materialized chunk or retained copy.
   fallback_transfer_cap <- reservation_cap_bytes / if (content_addressed) 2 else 1
   if (!has_storage_guard && (!is.finite(fallback_transfer_cap) || fallback_transfer_cap <= 0)) {
@@ -1981,6 +1986,10 @@ acquisition_queue_default_download <- function(
       error_message = "A legacy downloader without a storage guard needs a finite reservation-derived cap."
     ))
   }
+  transfer_cap_mb <- min(
+    max_file_size_mb,
+    if (has_storage_guard) Inf else fallback_transfer_cap / (1024^2)
+  )
   guard_state <- new.env(parent = emptyenv())
   guard_state$checked_through <- 0
   guard_state$last_advertised <- NA_real_
@@ -2063,11 +2072,7 @@ acquisition_queue_default_download <- function(
     overwrite = FALSE
   )
   if ("..." %in% download_formals || "max_file_size_mb" %in% download_formals) {
-    download_args$max_file_size_mb <- if (has_storage_guard) {
-      Inf
-    } else {
-      fallback_transfer_cap / (1024^2)
-    }
+    download_args$max_file_size_mb <- transfer_cap_mb
   }
   if ("content_addressed" %in% names(formals(download_fn))) {
     download_args$content_addressed <- content_addressed
@@ -2085,7 +2090,7 @@ acquisition_queue_default_download <- function(
   had_timeout_option <- "planscanR.timeout" %in% names(options())
   previous_timeout <- getOption("planscanR.timeout")
   options(
-    planscanR.max_file_size_mb = if (has_storage_guard) Inf else fallback_transfer_cap / (1024^2),
+    planscanR.max_file_size_mb = transfer_cap_mb,
     planscanR.timeout = Inf
   )
   on.exit(

@@ -73,14 +73,16 @@ if (!requireNamespace("planscanR.screen", quietly = TRUE)) {
 }
 
 catalog <- acquisition_worker_open_catalog(catalog_path, retry = idle)
-# Queued downloads receive a reservation-derived ceiling from the worker
-# claim. Keep the leaf option unbounded in this production process so a
-# historical 50 MiB default cannot become an independent acquisition limit.
-# The queue handler scopes the leaf request timeout to the transfer and keeps
-# the independent lease guard heartbeating while the request is running.
-# Set it after catalog initialization because the catalog's legacy migration
-# still records a finite estimate for non-download storage jobs.
-options(planscanR.max_file_size_mb = Inf)
+# Disk reservations and the explicit per-file policy cap are independent.
+# Avoid the leaf's implicit historical cap; the queue passes the policy limit
+# explicitly and retains lease-fenced storage guarding during the transfer.
+# The acquisition policy cap is independent of the disk-space reservation.
+cap_mb <- suppressWarnings(as.numeric(Sys.getenv("CURATION_ACQUISITION_MAX_FILE_SIZE_MIB", "Inf")))
+if (length(cap_mb) != 1L || is.na(cap_mb) || cap_mb <= 0) {
+  stop("CURATION_ACQUISITION_MAX_FILE_SIZE_MIB must be positive or Inf", call. = FALSE)
+}
+options(planscanR.max_file_size_mb = Inf,
+        planscanR.acquisition_max_file_size_mb = cap_mb)
 health_started <- FALSE
 health_failed <- FALSE
 on.exit({

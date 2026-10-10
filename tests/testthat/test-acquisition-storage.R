@@ -739,3 +739,89 @@ test_that("storage migration preserves populated v3 and campaign queue rows", {
   )))
   expect_equal(nrow(DBI::dbGetQuery(catalog$conn, "PRAGMA foreign_key_check")), 0L)
 })
+
+test_that("guarded queue downloads honor an explicit MiB cap without disabling the guard", {
+  skip_if_not_installed("filelock")
+  catalog <- storage_catalog()
+  on.exit(catalog$close(), add = TRUE)
+  admin <- curation_actor("admin", roles = "admin")
+  root <- file.path(withr::local_tempdir(), "guarded-root")
+  acquisition_storage_register_root(catalog, "00-guarded", root, admin, reserve_bytes = 1L)
+  source <- acquisition_catalog_register_source(catalog, "nl", "portal.example", "guarded")
+  document <- acquisition_catalog_register_document(
+    catalog,
+    source$source_ref_id,
+    native_attachment_id = "guarded",
+    attachment_url = "https://portal.example/guarded.bin"
+  )
+  job <- acquisition_queue_enqueue(catalog, "download", "document", document$document_ref_id)
+  claim <- acquisition_queue_claim(catalog, "guarded-worker")
+  expect_true(claim$ok)
+  observed <- new.env(parent = emptyenv())
+  fake_download <- function(
+    url, country, document_id, cache_dir, max_file_size_mb, overwrite = FALSE,
+    storage_guard
+  ) {
+    observed$cap <- max_file_size_mb
+    observed$guard <- storage_guard
+    body <- charToRaw("underreported body")
+    first <- storage_guard(0, advertised_size = 1, phase = "stream", pending_bytes = 4)
+    expect_true(first$ok)
+    storage_guard(4, advertised_size = 1, phase = "stream", pending_bytes = length(body) - 4L)
+    destination <- planscanR::cache_path(url, country, document_id, cache_dir = cache_dir)
+    dir.create(dirname(destination), recursive = TRUE, showWarnings = FALSE)
+    writeBin(body, destination)
+    sha <- planscanR:::file_sha256(destination)
+    planscanR:::write_download_receipt(destination, url, "application/octet-stream", length(body), sha)
+    storage_guard(length(body), advertised_size = 1, phase = "publish", pending_bytes = 0)
+    tibble::tibble(
+      url = url,
+      local_path = destination,
+      size_bytes = length(body),
+      sha256 = sha,
+      status = "downloaded",
+      reason = NA_character_
+    )
+  }
+  testthat::local_mocked_bindings(download_to_cache = fake_download, .package = "planscanR")
+  result <- acquisition_queue_default_download(claim, catalog, max_file_size_mb = 50)
+  expect_identical(result$status, "succeeded")
+  expect_identical(observed$cap, 50)
+  expect_true(is.function(observed$guard))
+  acquisition_queue_complete(catalog, claim$job_id, claim$lease_token, status = "succeeded", result = result)
+  expect_identical(acquisition_storage_reservations(catalog)$state[[1L]], "released")
+  expect_identical(acquisition_queue_jobs(catalog)$state[[1L]], "succeeded")
+  expect_true(job$job_id %in% acquisition_queue_jobs(catalog)$job_id)
+})
+
+
+test_that("oversized guarded downloads are deferred for later retry", {
+  skip_if_not_installed("filelock")
+  catalog <- storage_catalog()
+  on.exit(catalog$close(), add = TRUE)
+  root <- file.path(withr::local_tempdir(), "capped-root")
+  acquisition_storage_register_root(catalog, "00-capped", root,
+                                   curation_actor("admin", roles = "admin"), reserve_bytes = 1L)
+  source <- acquisition_catalog_register_source(catalog, "nl", "portal.example", "capped")
+  document <- acquisition_catalog_register_document(catalog, source$source_ref_id,
+    native_attachment_id = "large", attachment_url = "https://portal.example/large.pdf")
+  acquisition_queue_enqueue(catalog, "download", "document", document$document_ref_id)
+  claim <- acquisition_queue_claim(catalog, "capped-worker")
+  fake_download <- function(url, country, document_id, cache_dir, max_file_size_mb,
+                            overwrite = FALSE, storage_guard) {
+    expect_identical(max_file_size_mb, 50)
+    expect_identical(getOption("planscanR.max_file_size_mb"), 50)
+    expect_true(is.function(storage_guard))
+    tibble::tibble(status = "skipped_size", reason = "size exceeds 50 MiB")
+  }
+  testthat::local_mocked_bindings(download_to_cache = fake_download, .package = "planscanR")
+  result <- acquisition_queue_default_download(claim, catalog, max_file_size_mb = 50)
+  expect_identical(result$status, "blocked")
+  expect_identical(result$error_category, "download-size-limit")
+  acquisition_queue_complete(catalog, claim$job_id, claim$lease_token,
+                             status = result$status, result = result,
+                             error_category = result$error_category,
+                             error_message = result$error_message)
+  expect_identical(acquisition_queue_jobs(catalog)$state[[1L]], "blocked")
+  expect_identical(acquisition_storage_reservations(catalog)$state[[1L]], "released")
+})
