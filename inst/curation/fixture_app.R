@@ -60,7 +60,14 @@ config <- curation_config(
     nonrenewable_score = 0.5
   ),
   funnel_stages = stages,
-  branding = list(title = "Curation fixture", primary = "#1261a0"),
+  branding = list(
+    title = "Curation fixture",
+    primary = "#0e3c62",
+    secondary = "#009aa3",
+    success = "#92c023",
+    bootswatch = "flatly",
+    border_radius = "0.6rem"
+  ),
   artifact_paths = list(root = file.path(tempdir(), "planscanR-screen-c1f-fixture")),
   translator = NULL
 )

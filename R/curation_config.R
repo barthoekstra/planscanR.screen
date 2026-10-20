@@ -245,7 +245,9 @@ curation_resolve_actor <- function(resolver, request) {
 #' @param funnel_stages Non-empty list of `{key, label, fn}` entries. Each `fn`
 #'   accepts `records` and `context` and returns a logical stage mask.
 #' @param branding Explicit named branding values, including `title` and
-#'   `primary`.
+#'   `primary`. Optional `secondary`, `success`, `bootswatch`, and
+#'   `border_radius` values configure the app theme. Supplying both
+#'   `secondary` and `success` enables a three-colour navbar gradient.
 #' @param artifact_paths Explicit named artifact paths, including `root`.
 #' @param translator Optional `curation_translation_provider`; `NULL` is valid.
 #' @return A `planscanR_curation_config` object.

@@ -6,3 +6,29 @@
 *.Rcheck
 *.tar.gz
 docs
+
+# Local credentials (keep example templates versioned)
+.env
+.env.*
+!.env.example
+!.env.*.example
+.Renviron
+.Renviron.*
+!.Renviron.example
+*.pem
+*.key
+
+# Local agent state, environments and generated runtime files
+.claude/
+.harness/
+.harness-worktrees/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+.Rlib/
+/cache/
+/out/
+/tmp/
+/*.log
+*.duckdb.wal

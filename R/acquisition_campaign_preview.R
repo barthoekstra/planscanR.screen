@@ -194,6 +194,7 @@ acquisition_campaign_selection_from_records <- function(catalog, records, thresh
   )
   for (column in intersect(
     c(
+      "title", "project_title", "url", "source_url",
       "energy_tags", "energy_tag", "energy", "energy_evidence", "energy_source",
       "energy_confidence", "confidence", "manual_energy_tag", "energy_override"
     ),
@@ -433,6 +434,7 @@ acquisition_campaign_preview <- function(
       portal = item$portal,
       native_project_id = item$native_project_id,
       title = item$title %||% NA_character_,
+      source_url = item$source_url %||% NA_character_,
       probability = item$probability,
       selected = item$selected,
       energy_kind = item$energy_kind,
@@ -746,7 +748,7 @@ acquisition_campaign_preview_items_page <- function(
   }
   if (nrow(items) > 0L && !"title" %in% names(items)) items$title <- NA_character_
   visible <- c(
-    "title", "country", "portal", "native_project_id", "source_ref_id",
+    "title", "country", "portal", "native_project_id", "source_url",
     "probability", "selected", "energy_kind", "priority", "priority_rule_id",
     "priority_explanation", "exclusion_reason"
   )
@@ -861,6 +863,22 @@ acquisition_campaign_preview_display_table <- function(data) {
       is.na(probability), "Unknown", sprintf("%.0f%%", 100 * probability)
     )
   }
+  project_urls <- if ("source_url" %in% names(data)) as.character(data$source_url) else NULL
+  # Escape all values because the project column contains an HTML link.
+  data[] <- lapply(data, function(value) htmltools::htmlEscape(as.character(value)))
+  if (all(c("portal", "native_project_id") %in% names(data))) {
+    label <- paste(data$portal, data$native_project_id, sep = " / ")
+    if ("source_url" %in% names(data)) {
+      urls <- project_urls
+      linked <- !is.na(urls) & grepl("^https?://", urls)
+      label[linked] <- paste0('<a href="', htmltools::htmlEscape(urls[linked], attribute = TRUE),
+                              '" target="_blank" rel="noopener noreferrer">', label[linked], '</a>')
+    }
+    data$native_project_id <- label
+    data$portal <- NULL
+  }
+  data$source_ref_id <- NULL
+  data$source_url <- NULL
   names(data) <- vapply(names(data), acquisition_dashboard_display_name, character(1))
   names(data)[names(data) == "Title"] <- "Project title"
   names(data)[names(data) == "Priority rule id"] <- "Priority rule"
@@ -1152,6 +1170,7 @@ acquisition_campaign_panel_server <- function(
       {
         acquisition_campaign_preview_display_table(campaign_page_data())
       },
+      sanitize.text.function = identity,
       striped = TRUE
     )
     submission_result <- shiny::reactiveVal(
@@ -1192,6 +1211,9 @@ acquisition_campaign_panel_server <- function(
             ))
           )
         }
+        # Model creator provenance belongs to preview; submission uses the
+        # trusted actor resolver for model registration and campaign authorship.
+        resolved$created_by <- NULL
         result <- tryCatch(
           do.call(submit_fn, c(
             list(catalog = catalog),

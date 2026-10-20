@@ -1626,11 +1626,37 @@ curation_app_ui <- function(config, logout_path = NULL, acquisition = NULL) {
   }
   bslib <- asNamespace("bslib")
   shiny <- asNamespace("shiny")
+  branding <- config$branding
+  theme_args <- c(
+    list(version = 5),
+    branding[intersect(c("primary", "secondary", "success", "bootswatch"), names(branding))]
+  )
+  if (!is.null(branding$border_radius)) theme_args[["border-radius"]] <- branding$border_radius
+  brand_css <- paste0(
+    ".card{border:1px solid #e6e8ea;}",
+    "a{color:", branding$primary, ";}",
+    ".irs-bar{background:", branding$primary, ";border-color:", branding$primary, ";}",
+    ".irs-handle{border-color:", branding$primary, ";}",
+    ".irs-handle>i:first-child{background:", branding$primary, ";}",
+    ".irs-from,.irs-to,.irs-single{background:", branding$primary, ";}",
+    ".irs-from:before,.irs-to:before,.irs-single:before{border-top-color:", branding$primary, ";}"
+  )
+  if (all(c("secondary", "success") %in% names(branding))) {
+    brand_css <- paste0(
+      brand_css,
+      ".navbar{background:linear-gradient(90deg,", branding$primary, " 0%,",
+      branding$secondary, " 55%,", branding$success, " 100%)!important;}",
+      ".navbar .navbar-brand,.navbar .nav-link{color:#fff!important;}",
+      ".navbar .nav-link.active,.navbar .show>.nav-link{color:#fff!important;",
+      "font-weight:600;text-decoration:underline;}"
+    )
+  }
   bslib$page_navbar(
     title = config$branding$title,
     id = "nav",
-    theme = bslib$bs_theme(version = 5, primary = config$branding$primary),
+    theme = do.call(bslib$bs_theme, theme_args),
     header = htmltools::tagList(
+      htmltools::tags$style(htmltools::HTML(brand_css)),
       htmltools::tags$style(htmltools::HTML(
         ".curation-decision{border:1px solid #ccc;background:#fff;border-radius:4px;",
         "font-size:11px;padding:2px 7px;cursor:pointer;line-height:1.5;}",

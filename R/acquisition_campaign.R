@@ -259,6 +259,7 @@ acquisition_campaign_items_from_selection <- function(catalog, selection, thresh
       country = as.character(source_rows$country[[i]]),
       portal = as.character(source_rows$portal[[i]]),
       native_project_id = as.character(source_rows$native_project_id[[i]]),
+      source_url = acquisition_campaign_column_value(selection, i, c("source_url", "url"), NA_character_),
       title = if (is.null(title) || length(title) == 0L || is.na(title[[1L]])) NA_character_ else as.character(title[[1L]]),
       selected = selected,
       probability = probability,

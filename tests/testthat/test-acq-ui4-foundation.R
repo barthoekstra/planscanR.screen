@@ -418,7 +418,7 @@ testthat::test_that("the optional campaign panel names preview, unknown totals a
   testthat::expect_match(html, "Queue selected acquisition")
 })
 
-testthat::test_that("the campaign panel submits the displayed artifact digest", {
+testthat::test_that("the campaign panel drops preview creator and submits the displayed artifact digest", {
   for (pkg in c("DBI", "RSQLite", "openssl", "shiny")) {
     testthat::skip_if_not_installed(pkg)
   }
@@ -430,6 +430,7 @@ testthat::test_that("the campaign panel submits the displayed artifact digest", 
   preview <- list(
     selection = acq_ui4_selection(fixture$sources),
     model_id = "model-ui4-static-preview",
+    created_by = "original-model-author",
     input_snapshot_id = "snapshot-ui4",
     threshold = 0.5,
     policy_version = "biogain-policy.v1",
@@ -449,10 +450,21 @@ testthat::test_that("the campaign panel submits the displayed artifact digest", 
       session$setInputs(`campaign-threshold` = 0.5)
       session$flushReact()
       expect_false(is.null(output$`campaign-status`))
-      writeLines("replacement after displayed preview", artifact)
       session$setInputs(`campaign-submit` = 1L)
       session$flushReact()
-      expect_match(as.character(output$`campaign-submit-result`), "changed after preview")
+      expect_match(as.character(output$`campaign-submit-result`), "queued 1 queue job")
+      campaigns <- acquisition_campaigns(fixture$catalog)
+      expect_identical(campaigns$submitted_by, "admin-ui4")
+      registered <- acquisition_catalog_one(
+        acquisition_catalog_connection(fixture$catalog),
+        "SELECT created_by FROM acquisition_models WHERE model_id = ?",
+        list("model-ui4-static-preview")
+      )
+      expect_identical(registered$created_by, "admin-ui4")
+      writeLines("replacement after displayed preview", artifact)
+      session$setInputs(`campaign-submit` = 2L)
+      session$flushReact()
+      expect_match(as.character(output$`campaign-submit-result`), "does not match the registered immutable model")
     }
   )
 })
