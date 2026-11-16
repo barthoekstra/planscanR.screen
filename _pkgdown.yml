@@ -53,6 +53,7 @@ reference:
   - selection_learner
   - selection_learner_logistic
   - selection_learners
+  - selection_learners_builtin
   - train_selection_model
   - predict_selection
   - selection_cv_metrics
@@ -60,6 +61,20 @@ reference:
   - learning_curve_summary
   - consensus_reviews
   - save_selection_model
+
+- title: Curation
+  desc: >
+    Human review of screened records: SQLite store, review workflow and app.
+  contents:
+  - starts_with("curation_")
+  - run_curation
+
+- title: Acquisition
+  desc: >
+    Acquisition campaigns, job queue and dashboard.
+  contents:
+  - starts_with("acquisition_")
+  - run_acquisition_dashboard
 
 - title: Package
   contents:
