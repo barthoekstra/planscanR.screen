@@ -15,6 +15,14 @@ acquisition_campaign_identity_abort <- function(message) {
 #'
 #' The model file is copied and fingerprinted by the existing catalog registry;
 #' this helper only connects the two immutable artifact stores.
+#' @param catalog Acquisition catalog.
+#' @param artifact_store Published curation artifact store.
+#' @param scope Immutable curation scope.
+#' @param model_id Published model identifier.
+#' @param actor Trusted actor allowed to read the model artifact.
+#' @param input_snapshot_id Optional override for the model input snapshot.
+#' @param metadata Optional additional model provenance metadata.
+#' @return A registered model reference.
 #' @export
 acquisition_catalog_register_curation_model <- function(
   catalog,
@@ -493,6 +501,22 @@ acquisition_campaign_preview <- function(
 #'
 #' The resolver is evaluated at mutation time, so a reviewer or revoked actor
 #' cannot reuse a previously rendered preview to submit work.
+#' @param catalog Acquisition catalog.
+#' @param selection Selection data frame carrying source identity and scores.
+#' @param model_id Registered immutable model identifier.
+#' @param input_snapshot_id Immutable input snapshot identity.
+#' @param threshold Selection probability threshold recorded as evidence.
+#' @param policy_version Caller-supplied policy version.
+#' @param priority_rules Ordered caller-supplied country/energy rules.
+#' @param actor_resolver Trusted resolver for the current authenticated actor.
+#' @param request Optional request context passed to the actor resolver.
+#' @param campaign_id Optional stable campaign identifier.
+#' @param metadata Optional additional immutable campaign metadata.
+#' @param model_artifact_path Optional artifact path used during registration.
+#' @param model_config_id Optional model configuration identity.
+#' @param model_metadata Optional model provenance metadata.
+#' @param artifact_path Alias for `model_artifact_path`.
+#' @param config_id Alias for `model_config_id`.
 #' @param model_input_snapshot_id Optional model training snapshot identity when
 #'   the campaign uses a separate prepared snapshot.
 #' @param model_input_snapshot_version Optional model training snapshot version.
@@ -748,7 +772,7 @@ acquisition_campaign_preview_items_page <- function(
   }
   if (nrow(items) > 0L && !"title" %in% names(items)) items$title <- NA_character_
   visible <- c(
-    "title", "country", "portal", "native_project_id", "source_url",
+    "title", "country", "portal", "source_ref_id", "native_project_id", "source_url",
     "probability", "selected", "energy_kind", "priority", "priority_rule_id",
     "priority_explanation", "exclusion_reason"
   )
@@ -1001,6 +1025,9 @@ acquisition_campaign_panel_server <- function(
     preview_args_cache <- shiny::reactiveVal(NULL)
     base_preview <- shiny::reactive(acquisition_campaign_panel_preview_args(preview))
     scope_available <- shiny::reactive({
+      if (!acquisition_campaign_panel_is_active(active)) {
+        return(character(0))
+      }
       resolved <- base_preview()
       if (is.null(resolved)) {
         return(character(0))
@@ -1023,6 +1050,9 @@ acquisition_campaign_panel_server <- function(
       value
     })
     args <- shiny::reactive({
+      if (!acquisition_campaign_panel_is_active(active)) {
+        return(NULL)
+      }
       resolved <- base_preview()
       if (is.null(resolved)) {
         return(NULL)

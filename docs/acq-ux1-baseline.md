@@ -37,17 +37,15 @@ are server/offline timings; browser rendering is recorded separately.
 | Repeat threshold helper | 0.011 s | 38,400 | — |
 
 The captured process RSS reached 670,031,872 bytes during repeated widget
-serialization. The server app currently caps the displayed frame at 5,000
-rows (`R/curation_app.R`); this is why tab/filter payload counts are lower than
-the retained snapshot. The page timings above are helper simulations that
-pass a 25-row frame directly to the widget. Actual app page navigation initially
-sends the capped 5,000-row display frame and is measured by the host browser
-fixture separately.
+serialization. The server app now pages the eligible frame before rendering,
+with a default 25-row page and a 250-row maximum (`R/curation_app.R`). The page
+timings above pass a 25-row frame directly to the widget; actual app navigation
+uses the same bounded server-side page contract.
 
 The installed widget inventory and payload columns are in the JSON evidence.
-The current `reactable` object marks non-display columns hidden but still sends
-them in its JSON data. The fixture confirms `internal_note` and
-`source_payload` are present in that payload.
+The current `reactable` object receives only the compact display columns, so
+source-only fields such as `internal_note` and `source_payload` are excluded
+from its JSON data.
 
 The JSON also records isolated `reactable` probes for the workspace, curation,
 and acquisition R libraries. Each available library reports version `0.4.5`,
@@ -89,10 +87,10 @@ Playwright availability without treating it as browser-memory evidence.
 The isolated suite
 `tests/characterization/test-acq-ux1-future.R` intentionally remains outside
 the default tests. Its literal expected-red output is retained at
-`../../.claude/state/acq-ux1-evidence/future-red.log` and currently has five
-failures: the actual app-server 5,000-row cap, an unbounded widget page
-payload, hidden fields in widget JSON, changing no-change poll tokens, and
-materialization of all 2,000 repeated dashboard-attempt rows.
+`../../.claude/state/acq-ux1-evidence/future-red.log` as a pre-ACQ-UX2
+characterization; its historical failures include the former 5,000-row cap,
+unbounded widget page payload, hidden fields in widget JSON, changing no-change
+poll tokens, and materialization of all 2,000 repeated dashboard-attempt rows.
 The country/document/revision collision identity check passes. The default
 baseline and existing curation/dashboard/records tests pass.
 

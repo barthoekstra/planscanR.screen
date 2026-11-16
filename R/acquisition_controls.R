@@ -186,7 +186,7 @@ acquisition_controls_insert_audit <- function(
   created_at <- acquisition_catalog_now()
   audit_id <- paste0(
     "control-",
-    acquisition_catalog_digest(list(action, target_type, target_id, actor_id, reason, prior_state, resulting_state, details, created_at, runif(1)))
+    acquisition_catalog_digest(list(action, target_type, target_id, actor_id, reason, prior_state, resulting_state, details, created_at, stats::runif(1)))
   )
   DBI::dbExecute(
     conn,

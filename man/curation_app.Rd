@@ -48,8 +48,8 @@ module settings. It is absent by default.}
 linkage and attribution rows. Unresolved rows are shown read-only.}
 
 \item{input_provenance}{Optional BIOGAIN or caller-supplied identity for the
-compatible scored input. The app adds the loaded snapshot identity and content
-fingerprint before training.}
+compatible scored input. The app adds the loaded snapshot identity and
+content fingerprint before training.}
 
 \item{cohort_receipt}{Optional immutable historical-cohort receipt carried
 into the model and publication provenance.}

@@ -1,5 +1,10 @@
 worker_startup_helper <- function() {
-  path <- testthat::test_path("..", "..", "inst", "worker", "acquisition_worker.R")
+  root <- screen_test_source_root()
+  path <- if (identical(root, "__installed_namespace__")) {
+    system.file("worker", "acquisition_worker.R", package = "planscanR.screen")
+  } else {
+    file.path(root, "inst", "worker", "acquisition_worker.R")
+  }
   expressions <- parse(path)
   helper <- Filter(function(expr) {
     is.call(expr) && identical(expr[[1L]], as.name("<-")) &&

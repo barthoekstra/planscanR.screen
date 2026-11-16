@@ -1,5 +1,23 @@
 # Test helpers for planscanR.screen.
 
+# Child-process fixtures need the package source tree when running from a
+# checkout, but R CMD check keeps that tree under 00_pkg_src. Fall back to the
+# installed namespace when a check implementation does not retain sources.
+screen_test_source_root <- function() {
+  candidates <- unique(c(
+    testthat::test_path("..", ".."),
+    testthat::test_path("..", "..", "00_pkg_src", "planscanR.screen"),
+    testthat::test_path("..", "..", "planscanR.screen")
+  ))
+  candidates <- normalizePath(candidates, mustWork = FALSE)
+  source_roots <- candidates[vapply(
+    candidates,
+    function(path) file.exists(file.path(path, "R", "acquisition_catalog.R")),
+    logical(1)
+  )]
+  if (length(source_roots) > 0L) source_roots[[1L]] else "__installed_namespace__"
+}
+
 # Deterministic, language-agnostic mock embedding model used across the
 # relevance/topics tests. We never touch reticulate / sentence-transformers in
 # the automated suite — those would require a live Python environment.

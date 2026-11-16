@@ -17,6 +17,8 @@ acquisition_queue_claim(
 \item{worker_id}{Stable worker process identity.}
 
 \item{lease_seconds}{Lease duration.}
+
+\item{kinds}{Optional job-kind filter. Defaults to all supported kinds.}
 }
 \value{
 A claim row with \code{ok}, \code{job_id}, \code{attempt_no}, \code{lease_token}, and

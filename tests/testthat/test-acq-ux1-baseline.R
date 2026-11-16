@@ -1,13 +1,9 @@
 if (!exists("acq_ux1_fixture_records", mode = "function")) {
-  runner_path <- testthat::test_path(
-    "..",
-    "..",
-    "inst",
-    "curation",
-    "acq_ux1_characterization.R"
-  )
-  if (!file.exists(runner_path)) {
-    runner_path <- file.path(getwd(), "inst", "curation", "acq_ux1_characterization.R")
+  source_root <- screen_test_source_root()
+  runner_path <- if (identical(source_root, "__installed_namespace__")) {
+    system.file("curation", "acq_ux1_characterization.R", package = "planscanR.screen")
+  } else {
+    file.path(source_root, "inst", "curation", "acq_ux1_characterization.R")
   }
   source(normalizePath(runner_path, mustWork = TRUE), local = FALSE)
 }
@@ -24,6 +20,8 @@ testthat::test_that("ACQ-UX1 fixture and current widget contract are measurable"
   )
   testthat::expect_equal(metrics$payload_rows, 25L)
   testthat::expect_equal(metrics$page_size, 25)
-  testthat::expect_equal(metrics$page_size_options, list(25, 50, 100, 250))
-  testthat::expect_true(all(c("internal_note", "source_payload") %in% metrics$hidden_fixture_fields_in_payload))
+  # The server pages rows before rendering and strips source-only fields from
+  # the browser payload. Client-side page-size controls are intentionally off.
+  testthat::expect_null(metrics$page_size_options)
+  testthat::expect_length(metrics$hidden_fixture_fields_in_payload, 0L)
 })

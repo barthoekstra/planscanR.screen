@@ -34,9 +34,11 @@ so \code{\link[planscanR:index_cache]{planscanR::index_cache()}} keeps them visi
 recs <- index_cache("/path/to/cache")
 scored <- score_assessments(
   recs,
-  c(wind  = "wind energy",
+  c(
+    wind = "wind energy",
     solar = "solar energy",
-    res   = "regional energy transition strategy and planning"),
+    res = "regional energy transition strategy and planning"
+  ),
   write_sidecar = TRUE
 )
 }

@@ -518,6 +518,7 @@ acquisition_queue_recover <- function(catalog) {
 #' @param catalog A catalog from [acquisition_catalog_open()].
 #' @param worker_id Stable worker process identity.
 #' @param lease_seconds Lease duration.
+#' @param kinds Optional job-kind filter. Defaults to all supported kinds.
 #' @return A claim row with `ok`, `job_id`, `attempt_no`, `lease_token`, and
 #'   job fields, or `ok = FALSE` when no claim is available.
 #' @export
@@ -591,7 +592,7 @@ acquisition_queue_claim <- function(
     attempt_no <- as.integer(candidate$attempt_count[[1L]]) + 1L
     token <- paste0(
       "attempt-",
-      acquisition_catalog_digest(list(Sys.time(), Sys.getpid(), worker_id, candidate$job_id[[1L]], attempt_no, runif(1)))
+      acquisition_catalog_digest(list(Sys.time(), Sys.getpid(), worker_id, candidate$job_id[[1L]], attempt_no, stats::runif(1)))
     )
     expires <- acquisition_queue_time_after(lease_seconds)
     job_id <- as.character(candidate$job_id[[1L]])
@@ -1841,7 +1842,7 @@ acquisition_queue_reconcile_job <- function(catalog, job_id, cache_root = NULL) 
       return(list(ok = FALSE, status = "not-terminal"))
     }
     attempt <- as.integer(current$attempt_count[[1L]]) + 1L
-    token <- paste0("receipt-", acquisition_catalog_digest(list(job_id, Sys.time(), Sys.getpid(), runif(1))))
+    token <- paste0("receipt-", acquisition_catalog_digest(list(job_id, Sys.time(), Sys.getpid(), stats::runif(1))))
     expires <- acquisition_queue_time_after(300)
     DBI::dbExecute(conn, paste(
       "INSERT INTO acquisition_job_attempts (job_id, attempt_no, lease_token, worker_id, host,",

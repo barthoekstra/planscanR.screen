@@ -17,6 +17,6 @@ acquisition_queue_reconcile_file(catalog, file_ref_id, cache_root = NULL)
 A list with \code{status} and reconciliation details.
 }
 \description{
-Only \code{planscan-cache} locations are resolved by this compact service. A
-legacy or unverified claim is reported without promoting its bytes.
+Registered storage roots are resolved through the catalog. A legacy or
+unverified claim is reported without promoting its bytes.
 }

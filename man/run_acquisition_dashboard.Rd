@@ -9,8 +9,11 @@ run_acquisition_dashboard(
   actor_resolver,
   request = NULL,
   actor_probe = NULL,
+  preview = NULL,
+  submit_fn = acquisition_campaign_submit_authenticated,
   refresh_ms = 2000L,
   page_size = 50L,
+  storage_context = NULL,
   launch.browser = interactive(),
   ...
 )
@@ -24,9 +27,16 @@ run_acquisition_dashboard(
 
 \item{actor_probe}{Optional non-touching resolver used for session checks.}
 
+\item{preview}{Optional campaign preview input passed to the acquisition
+campaign panel.}
+
+\item{submit_fn}{Authenticated campaign submission function.}
+
 \item{refresh_ms}{Database refresh interval in milliseconds.}
 
 \item{page_size}{Queue rows shown per refresh.}
+
+\item{storage_context}{Optional explicit state/cache storage context.}
 
 \item{launch.browser}{Passed to \code{\link[shiny:runApp]{shiny::runApp()}}.}
 

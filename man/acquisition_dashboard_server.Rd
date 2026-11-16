@@ -10,10 +10,13 @@ acquisition_dashboard_server(
   actor_resolver,
   request = NULL,
   actor_probe = NULL,
+  preview = NULL,
+  submit_fn = acquisition_campaign_submit_authenticated,
   refresh_ms = 2000L,
   page_size = 50L,
   active = NULL,
-  target_limit = 100L
+  target_limit = 100L,
+  storage_context = NULL
 )
 }
 \arguments{
@@ -27,6 +30,11 @@ acquisition_dashboard_server(
 
 \item{actor_probe}{Optional non-touching resolver used for session checks.}
 
+\item{preview}{Optional campaign preview input passed to the acquisition
+campaign panel.}
+
+\item{submit_fn}{Authenticated campaign submission function.}
+
 \item{refresh_ms}{Database refresh interval in milliseconds.}
 
 \item{page_size}{Queue rows shown per refresh.}
@@ -35,6 +43,8 @@ acquisition_dashboard_server(
 Acquisition tab is active. Standalone dashboards are active by default.}
 
 \item{target_limit}{Maximum number of job or campaign control targets shown.}
+
+\item{storage_context}{Optional explicit state/cache storage context.}
 }
 \value{
 The value returned by \code{\link[shiny:moduleServer]{shiny::moduleServer()}}.

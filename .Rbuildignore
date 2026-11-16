@@ -12,4 +12,7 @@
 ^\.styler\.R$
 ^scripts$
 ^\.claude$
+^\.harness$
+^\.worktrees$
+^out$
 ^_site$

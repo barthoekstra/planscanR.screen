@@ -761,7 +761,7 @@ acquisition_dashboard_jobs <- function(
 }
 
 #' Alias for [acquisition_dashboard_jobs()].
-#' @inheritParams acquisition_dashboard_jobs
+#' @param ... Additional filters passed to [acquisition_dashboard_jobs()].
 #' @export
 acquisition_dashboard_queue <- function(...) acquisition_dashboard_jobs(...)
 
@@ -900,7 +900,7 @@ acquisition_dashboard_target_label <- function(row, target_type) {
   if (length(context) == 0L) {
     return(paste(tools::toTitleCase(target_type), id))
   }
-  paste0(paste(context, collapse = " / "), " — ", tools::toTitleCase(target_type), " ", id)
+  paste0(paste(context, collapse = " / "), " \u2014 ", tools::toTitleCase(target_type), " ", id)
 }
 
 # Return only the small set of control targets shown in the dashboard.  A
@@ -1111,11 +1111,15 @@ acquisition_dashboard_ui <- function(id = NULL, preview = NULL, storage_context 
 #' @param actor_resolver A trusted authenticated actor resolver.
 #' @param request Optional deployment request or function accepting `session`.
 #' @param actor_probe Optional non-touching resolver used for session checks.
+#' @param preview Optional campaign preview input passed to the acquisition
+#'   campaign panel.
+#' @param submit_fn Authenticated campaign submission function.
 #' @param refresh_ms Database refresh interval in milliseconds.
 #' @param page_size Queue rows shown per refresh.
 #' @param active Optional function or reactive value indicating whether the
 #'   Acquisition tab is active. Standalone dashboards are active by default.
 #' @param target_limit Maximum number of job or campaign control targets shown.
+#' @param storage_context Optional explicit state/cache storage context.
 #' @return The value returned by [shiny::moduleServer()].
 #' @export
 acquisition_dashboard_server <- function(
@@ -1308,7 +1312,7 @@ acquisition_dashboard_server <- function(
       paste0(
         "Status: ",
         tools::toTitleCase(as.character(health$status)),
-        " — expected ",
+        " \u2014 expected ",
         as.integer(counts[["expected"]]),
         ", alive ",
         as.integer(counts[["alive"]]),
@@ -1576,9 +1580,13 @@ acquisition_dashboard_server <- function(
 #' @param actor_resolver A trusted authenticated actor resolver.
 #' @param request Optional deployment request or function accepting `session`.
 #' @param actor_probe Optional non-touching resolver used for session checks.
+#' @param preview Optional campaign preview input passed to the acquisition
+#'   campaign panel.
+#' @param submit_fn Authenticated campaign submission function.
 #' @param refresh_ms Database refresh interval in milliseconds.
 #' @param page_size Queue rows shown per refresh.
 #' @param target_limit Maximum number of control targets shown.
+#' @param storage_context Optional explicit state/cache storage context.
 #' @return A `shiny.appobj`.
 #' @export
 acquisition_dashboard_app <- function(

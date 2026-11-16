@@ -278,7 +278,7 @@ acquisition_storage_migrate_batch <- function(job, catalog, batch_size = 25L,
     if (!identical(refreshed$status, "succeeded")) return(refreshed)
     return(list(status = "succeeded", migrated = 0L, remaining = 0L))
   }
-  selected <- head(pending, batch_size)
+  selected <- utils::head(pending, batch_size)
   selected_paths <- vapply(selected, function(i) relative[[i]], character(1))
   unique_paths <- unique(selected_paths)
   unique_path_indexes <- match(unique_paths, selected_paths)

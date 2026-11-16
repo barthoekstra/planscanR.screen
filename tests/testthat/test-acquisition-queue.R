@@ -372,10 +372,15 @@ test_that("concurrent stale publication keeps one canonical file", {
   writeLines(c(
     "args <- commandArgs(trailingOnly = TRUE)",
     "root <- args[[1L]]; db <- args[[2L]]; cache <- args[[3L]]; output <- args[[4L]]; ready <- args[[5L]]; worker_id <- args[[6L]]; writes <- args[[7L]]",
-    "source(file.path(root, 'R', 'utils_screen.R'), local = globalenv())",
-    "source(file.path(root, 'R', 'acquisition_catalog.R'), local = globalenv())",
-    "source(file.path(root, 'R', 'acquisition_queue.R'), local = globalenv())",
-    "source(file.path(root, 'R', 'acquisition_storage.R'), local = globalenv())",
+    "if (identical(root, '__installed_namespace__')) {",
+    "  library(planscanR.screen)",
+    "  acquisition_queue_default_download <- get('acquisition_queue_default_download', asNamespace('planscanR.screen'))",
+    "} else {",
+    "  source(file.path(root, 'R', 'utils_screen.R'), local = globalenv())",
+    "  source(file.path(root, 'R', 'acquisition_catalog.R'), local = globalenv())",
+    "  source(file.path(root, 'R', 'acquisition_queue.R'), local = globalenv())",
+    "  source(file.path(root, 'R', 'acquisition_storage.R'), local = globalenv())",
+    "}",
     "testthat::local_mocked_bindings(download_to_cache = function(url, country, document_id, cache_dir, overwrite = FALSE) {",
     "  destination <- planscanR::cache_path(url, country, document_id, cache_dir = cache_dir)",
     "  dir.create(dirname(destination), recursive = TRUE, showWarnings = FALSE)",
@@ -396,7 +401,7 @@ test_that("concurrent stale publication keeps one canonical file", {
     "writeLines(c(result$status, done$status), output)",
     "catalog$close()"
   ), worker)
-  root <- normalizePath(testthat::test_path("..", ".."), mustWork = TRUE)
+  root <- screen_test_source_root()
   rscript <- file.path(R.home("bin"), "Rscript")
   system2(rscript, c("--vanilla", worker, root, db, cache, outputs[[1L]], ready, "publisher-a", writes), wait = FALSE)
   deadline <- Sys.time() + 15
@@ -433,13 +438,15 @@ test_that("worker renews a blocking handler past its lease", {
   job <- acquisition_queue_enqueue(catalog, "discover", "source", refs$source$source_ref_id)
   observer <- withr::local_tempfile(fileext = ".R")
   observer_output <- withr::local_tempfile()
-  root <- normalizePath(testthat::test_path("..", ".."), mustWork = TRUE)
+  root <- screen_test_source_root()
   rscript <- file.path(R.home("bin"), "Rscript")
   writeLines(c(
     "args <- commandArgs(trailingOnly = TRUE)",
     "root <- args[[1L]]; db <- args[[2L]]; job_id <- args[[3L]]; output <- args[[4L]]",
-    "source(file.path(root, 'R', 'acquisition_catalog.R'), local = globalenv())",
-    "source(file.path(root, 'R', 'acquisition_queue.R'), local = globalenv())",
+    "if (identical(root, '__installed_namespace__')) { library(planscanR.screen) } else {",
+    "  source(file.path(root, 'R', 'acquisition_catalog.R'), local = globalenv())",
+    "  source(file.path(root, 'R', 'acquisition_queue.R'), local = globalenv())",
+    "}",
     "Sys.sleep(1.2)",
     "catalog <- acquisition_catalog_open(db)",
     "claim <- acquisition_queue_claim(catalog, 'observer', lease_seconds = 1L)",
@@ -486,14 +493,16 @@ test_that("independent processes claim a job only once", {
   writeLines(c(
     "args <- commandArgs(trailingOnly = TRUE)",
     "root <- args[[1L]]; db <- args[[2L]]; output <- args[[3L]]; id <- args[[4L]]",
-    "source(file.path(root, 'R', 'acquisition_catalog.R'), local = globalenv())",
-    "source(file.path(root, 'R', 'acquisition_queue.R'), local = globalenv())",
+    "if (identical(root, '__installed_namespace__')) { library(planscanR.screen) } else {",
+    "  source(file.path(root, 'R', 'acquisition_catalog.R'), local = globalenv())",
+    "  source(file.path(root, 'R', 'acquisition_queue.R'), local = globalenv())",
+    "}",
     "catalog <- acquisition_catalog_open(db)",
     "claimed <- acquisition_queue_claim(catalog, id, lease_seconds = 5L)",
     "writeLines(if (isTRUE(claimed$ok)) claimed$lease_token else 'none', output)",
     "catalog$close()"
   ), worker)
-  root <- normalizePath(testthat::test_path("..", ".."), mustWork = TRUE)
+  root <- screen_test_source_root()
   rscript <- file.path(R.home("bin"), "Rscript")
   system2(rscript, c("--vanilla", worker, root, db, outputs[[1L]], "a"), wait = FALSE)
   system2(rscript, c("--vanilla", worker, root, db, outputs[[2L]], "b"), wait = FALSE)
@@ -523,8 +532,13 @@ test_that("a killed worker lease is recovered by a fresh process", {
   writeLines(c(
     "args <- commandArgs(trailingOnly = TRUE)",
     "root <- args[[1L]]; db <- args[[2L]]; output <- args[[3L]]; pid_file <- args[[4L]]; ready <- args[[5L]]",
-    "source(file.path(root, 'R', 'acquisition_catalog.R'), local = globalenv())",
-    "source(file.path(root, 'R', 'acquisition_queue.R'), local = globalenv())",
+    "if (identical(root, '__installed_namespace__')) {",
+    "  library(planscanR.screen)",
+    "  acquisition_queue_start_heartbeat_guard <- get('acquisition_queue_start_heartbeat_guard', asNamespace('planscanR.screen'))",
+    "} else {",
+    "  source(file.path(root, 'R', 'acquisition_catalog.R'), local = globalenv())",
+    "  source(file.path(root, 'R', 'acquisition_queue.R'), local = globalenv())",
+    "}",
     "catalog <- acquisition_catalog_open(db)",
     "claim <- acquisition_queue_claim(catalog, 'killed-worker', lease_seconds = 1L)",
     "guard <- acquisition_queue_start_heartbeat_guard(catalog, claim, lease_seconds = 1L)",
@@ -534,7 +548,7 @@ test_that("a killed worker lease is recovered by a fresh process", {
     "invisible(file.create(ready))",
     "repeat Sys.sleep(1)"
   ), worker)
-  root <- normalizePath(testthat::test_path("..", ".."), mustWork = TRUE)
+  root <- screen_test_source_root()
   system2(
     file.path(R.home("bin"), "Rscript"),
     c("--vanilla", worker, root, db, output, pid_file, ready),

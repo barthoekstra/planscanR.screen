@@ -156,9 +156,11 @@ testthat::test_that("a killed worker process becomes stale without a graceful st
   writeLines(c(
     "args <- commandArgs(trailingOnly = TRUE)",
     "root <- args[[1L]]; db <- args[[2L]]; pid_file <- args[[3L]]; ready <- args[[4L]]",
-    "source(file.path(root, 'R', 'acquisition_catalog.R'), local = globalenv())",
-    "source(file.path(root, 'R', 'acquisition_queue.R'), local = globalenv())",
-    "source(file.path(root, 'R', 'acquisition_worker_health.R'), local = globalenv())",
+    "if (identical(root, '__installed_namespace__')) { library(planscanR.screen) } else {",
+    "  source(file.path(root, 'R', 'acquisition_catalog.R'), local = globalenv())",
+    "  source(file.path(root, 'R', 'acquisition_queue.R'), local = globalenv())",
+    "  source(file.path(root, 'R', 'acquisition_worker_health.R'), local = globalenv())",
+    "}",
     "catalog <- acquisition_catalog_open(db)",
     "acquisition_worker_health_configure(catalog, 'crash-worker')",
     "acquisition_worker_health_start(catalog, 'crash-worker')",
@@ -166,7 +168,7 @@ testthat::test_that("a killed worker process becomes stale without a graceful st
     "writeLines('ready', ready)",
     "repeat Sys.sleep(1)"
   ), worker)
-  root <- normalizePath(testthat::test_path("..", ".."), mustWork = TRUE)
+  root <- screen_test_source_root()
   system2(
     file.path(R.home("bin"), "Rscript"),
     c("--vanilla", worker, root, db, pid_file, ready),

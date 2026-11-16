@@ -44,8 +44,8 @@ defaults to \code{"random"}, or \code{NULL} for all sources.}
 
 \item{seed}{Optional seed passed to the existing trainer.}
 
-\item{input_provenance}{Optional identity for the explicitly selected scored
-input snapshot.}
+\item{input_provenance}{Optional identity for the explicitly selected
+scored input snapshot.}
 
 \item{cohort_receipt}{Optional immutable historical-cohort receipt identity.}
 }

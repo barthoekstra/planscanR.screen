@@ -6,6 +6,9 @@
 \usage{
 acquisition_dashboard_queue(...)
 }
+\arguments{
+\item{...}{Additional filters passed to \code{\link[=acquisition_dashboard_jobs]{acquisition_dashboard_jobs()}}.}
+}
 \description{
 Alias for \code{\link[=acquisition_dashboard_jobs]{acquisition_dashboard_jobs()}}.
 }

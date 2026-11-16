@@ -40,9 +40,11 @@ score_records(recs, "wind energy", em)
 # Multiple topics in one pass — column names will be relevance_score_wind etc.
 score_records(
   recs,
-  c(wind  = "wind energy",
+  c(
+    wind = "wind energy",
     solar = "solar energy",
-    res   = "regional energy transition strategy and planning"),
+    res = "regional energy transition strategy and planning"
+  ),
   em
 )
 }

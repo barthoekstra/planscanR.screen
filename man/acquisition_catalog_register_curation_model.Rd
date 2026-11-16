@@ -2,24 +2,37 @@
 % Please edit documentation in R/acquisition_campaign_preview.R
 \name{acquisition_catalog_register_curation_model}
 \alias{acquisition_catalog_register_curation_model}
-\title{Register a published C3 curation model in the acquisition catalog}
+\title{Register a published C3 model in the acquisition catalog.}
 \usage{
 acquisition_catalog_register_curation_model(
-  catalog, artifact_store, scope, model_id, actor,
-  input_snapshot_id = NULL, metadata = NULL
+  catalog,
+  artifact_store,
+  scope,
+  model_id,
+  actor,
+  input_snapshot_id = NULL,
+  metadata = NULL
 )
 }
 \arguments{
-\item{catalog}{A catalog from \code{\link[=acquisition_catalog_open]{acquisition_catalog_open()}}.}
-\item{artifact_store}{A C3 curation artifact store.}
-\item{scope}{The immutable curation scope.}
-\item{model_id}{Published C3 model identifier.}
-\item{actor}{Trusted authenticated actor allowed to read the artifact.}
-\item{input_snapshot_id}{Optional override for the model input snapshot identity.}
+\item{catalog}{Acquisition catalog.}
+
+\item{artifact_store}{Published curation artifact store.}
+
+\item{scope}{Immutable curation scope.}
+
+\item{model_id}{Published model identifier.}
+
+\item{actor}{Trusted actor allowed to read the model artifact.}
+
+\item{input_snapshot_id}{Optional override for the model input snapshot.}
+
 \item{metadata}{Optional additional model provenance metadata.}
 }
-\value{A model reference returned by \code{acquisition_catalog_register_model()}.}
+\value{
+A registered model reference.
+}
 \description{
-Reads the published immutable model artifact, copies it through the existing
-acquisition registry, and preserves its artifact hash and input snapshot.
+The model file is copied and fingerprinted by the existing catalog registry;
+this helper only connects the two immutable artifact stores.
 }

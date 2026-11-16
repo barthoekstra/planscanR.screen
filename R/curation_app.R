@@ -728,7 +728,7 @@ curation_app_historical_badge <- function(row) {
   source_text <- if (!is.null(original) && !is.na(original) && !is.null(imported) && !is.na(imported) &&
     nzchar(as.character(original)) && nzchar(as.character(imported)) &&
     !identical(as.character(original), as.character(imported))) {
-    paste0("original ", as.character(original), " · imported ", as.character(imported))
+    paste0("original ", as.character(original), " \u00b7 imported ", as.character(imported))
   } else if (!is.null(imported) && !is.na(imported) && nzchar(as.character(imported))) {
     paste0("source ", as.character(imported))
   } else {
@@ -745,11 +745,11 @@ curation_app_historical_badge <- function(row) {
     unverified = "unverified",
     as.character(status %||% "unverified")
   )
-  label <- paste("Historical", source_text, status_text, sep = " · ")
+  label <- paste("Historical", source_text, status_text, sep = " \u00b7 ")
   if (!is.null(reviewer) && !is.na(reviewer) && nzchar(as.character(reviewer))) {
-    label <- paste(label, paste0("by ", as.character(reviewer)), sep = " · ")
+    label <- paste(label, paste0("by ", as.character(reviewer)), sep = " \u00b7 ")
   }
-  if (!allowed) label <- paste(label, "read-only", sep = " · ")
+  if (!allowed) label <- paste(label, "read-only", sep = " \u00b7 ")
   htmltools::tags$span(
     class = paste("curation-historical-badge", if (allowed) "is-actionable" else "is-unresolved"),
     title = if (allowed) "Historical linkage is uniquely matched to the current record." else "Historical linkage is unresolved; current mutations are disabled.",
@@ -4353,6 +4353,8 @@ curation_app <- function(
 #'
 #' @inheritParams curation_app
 #' @param launch.browser Passed to [shiny::runApp()].
+#' @param acquisition Optional acquisition service configuration passed to
+#'   [curation_app()].
 #' @param ... Further arguments passed to [shiny::runApp()], such as `host` or
 #'   `port`.
 #' @return Invisibly, the result of [shiny::runApp()].

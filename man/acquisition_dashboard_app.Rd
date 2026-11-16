@@ -9,9 +9,12 @@ acquisition_dashboard_app(
   actor_resolver,
   request = NULL,
   actor_probe = NULL,
+  preview = NULL,
+  submit_fn = acquisition_campaign_submit_authenticated,
   refresh_ms = 2000L,
   page_size = 50L,
-  target_limit = 100L
+  target_limit = 100L,
+  storage_context = NULL
 )
 }
 \arguments{
@@ -23,11 +26,18 @@ acquisition_dashboard_app(
 
 \item{actor_probe}{Optional non-touching resolver used for session checks.}
 
+\item{preview}{Optional campaign preview input passed to the acquisition
+campaign panel.}
+
+\item{submit_fn}{Authenticated campaign submission function.}
+
 \item{refresh_ms}{Database refresh interval in milliseconds.}
 
 \item{page_size}{Queue rows shown per refresh.}
 
-\item{target_limit}{Maximum number of job or campaign control targets shown.}
+\item{target_limit}{Maximum number of control targets shown.}
+
+\item{storage_context}{Optional explicit state/cache storage context.}
 }
 \value{
 A \code{shiny.appobj}.

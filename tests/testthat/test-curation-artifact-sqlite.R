@@ -405,7 +405,7 @@ test_that("independent R processes cannot both publish a stale active revision",
   barrier <- file.path(root, "barrier")
   script <- file.path(root, "worker.R")
   outputs <- file.path(root, c("a.out", "b.out"))
-  package_root <- normalizePath(testthat::test_path("..", ".."), mustWork = TRUE)
+  package_root <- screen_test_source_root()
   writeLines(c(
     "args <- commandArgs(trailingOnly = TRUE)",
     "package_root <- args[[1L]]; db <- args[[2L]]; barrier <- args[[3L]]; out <- args[[4L]]; id <- args[[5L]]",
@@ -466,7 +466,7 @@ test_that("independent sample writers cannot replace one explicit sample ID", {
   barrier <- file.path(root, "sample-barrier")
   script <- file.path(root, "sample-worker.R")
   outputs <- file.path(root, c("sample-a.out", "sample-b.out"))
-  package_root <- normalizePath(testthat::test_path("..", ".."), mustWork = TRUE)
+  package_root <- screen_test_source_root()
   writeLines(c(
     "args <- commandArgs(trailingOnly = TRUE)",
     "package_root <- args[[1L]]; db <- args[[2L]]; barrier <- args[[3L]]; out <- args[[4L]]; id <- args[[5L]]",

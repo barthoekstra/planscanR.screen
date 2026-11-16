@@ -22,9 +22,9 @@ and \code{download_status}.}
 download, discovery, and local-path list columns after deriving counts.}
 
 \item{preserve_scored_features}{If \code{TRUE}, require the configured scored
-feature columns before enrichment and restore their exact values, including
-\code{NA}, after enrichment. This is the opt-in path for a verified scored-input
-context; the default retains ordinary keyword recomputation.}
+feature columns before enrichment and restore their exact values,
+including \code{NA}, after enrichment. This is the opt-in path for a verified
+scored-input context; the default retains ordinary keyword recomputation.}
 }
 \value{
 The enriched input frame with \code{cosine_max}, keyword scores,

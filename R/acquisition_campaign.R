@@ -285,7 +285,7 @@ acquisition_campaign_validate_items <- function(catalog, items) {
   if (nrow(countries) != length(items)) {
     acquisition_campaign_abort("Every selected source_ref_id must already exist in the acquisition catalog.")
   }
-  country_map <- setNames(as.character(countries$country), countries$source_ref_id)
+  country_map <- stats::setNames(as.character(countries$country), countries$source_ref_id)
   for (i in seq_along(items)) {
     items[[i]]$country <- unname(country_map[[items[[i]]$source_ref_id]])
     items[[i]]$probability <- acquisition_campaign_probability(items[[i]]$probability)

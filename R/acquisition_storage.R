@@ -486,10 +486,9 @@ acquisition_storage_ensure_default_root_connection <- function(conn) {
       )
     }
   }
-  # Keep a finite legacy estimate for storage jobs that do not carry their own
-  # size. Download reservations use the live free-space headroom below instead
-  # of treating this setting (or the leaf's historical 50 MiB option) as a
-  # per-file ceiling.
+  # Keep a finite default estimate for storage jobs that do not carry their own
+  # size. Download reservations use it as an initial lease and the live
+  # free-space guard below for growth; it is not a per-file transfer ceiling.
   if (is.null(acquisition_storage_setting_value_connection(conn, "default_estimate_bytes"))) {
     now <- acquisition_catalog_now()
     DBI::dbExecute(
@@ -831,11 +830,20 @@ acquisition_storage_root_for_job_connection <- function(conn, job) {
 }
 
 acquisition_storage_reservation_initial_bytes <- function(conn, job) {
+  estimated <- if (is.list(job)) job$estimated_bytes else NULL
+  unknown_size <- is.null(estimated) || length(estimated) == 0L ||
+    is.na(estimated[[1L]]) || estimated[[1L]] <= 0
   bytes <- acquisition_storage_job_estimate(job, conn)
-  # Start each download with a bounded budget. Estimates and HEAD values are
-  # advisory; the guard grows this lease before a chunk or duplicate copy is
-  # written. Keeping the initial lease small allows two downloads to overlap.
-  bytes <- max(64 * 1024, min(bytes, 4 * 1024^2))
+  if (unknown_size) {
+    # The configured unknown-size estimate is the reservation consumed by a
+    # future claim. It is still only an initial lease: the guard grows it
+    # before another chunk or copy is written.
+    bytes <- max(64 * 1024, bytes)
+  } else {
+    # Known estimates remain advisory. Start with a bounded lease and let the
+    # guard grow it before another chunk or copy is written.
+    bytes <- max(64 * 1024, min(bytes, 4 * 1024^2))
+  }
   if (identical(as.character(job$kind[[1L]]), "download") &&
     isTRUE(getOption("planscanR.content_addressed_downloads", FALSE))) {
     bytes <- bytes * 2
