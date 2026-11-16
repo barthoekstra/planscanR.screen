@@ -16,7 +16,9 @@ train_selection_model(
   v = 5L,
   repeats = 1L,
   threshold = 0.5,
-  seed = NULL
+  seed = NULL,
+  training_provenance = NULL,
+  strict = FALSE
 )
 ```
 
@@ -74,6 +76,17 @@ train_selection_model(
 - seed:
 
   Optional RNG seed for reproducible folds.
+
+- training_provenance:
+
+  Optional provenance list stored on the returned model. Used by the
+  curation adapter to pin the review cohort and scored input identities.
+
+- strict:
+
+  If `TRUE`, require a complete finite scored input and record exclusion
+  accounting for the curation foundation path. The default keeps the
+  generic trainer's historical feature behavior.
 
 ## Value
 

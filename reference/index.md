@@ -83,6 +83,363 @@ per-record scores, with a pluggable tidymodels learner.
   [`load_selection_model()`](https://barthoekstra.github.io/planscanR.screen/reference/save_selection_model.md)
   : Persist / restore a trained selection model.
 
+## Curation
+
+Human review of screened records: SQLite store, review workflow and app.
+
+- [`curation_actor()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_actor.md)
+  : Build a trusted authenticated actor value.
+- [`curation_actor_resolver()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_actor_resolver.md)
+  : Wrap an authenticated actor resolver for injection into a curation
+  context.
+- [`curation_app()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_app.md)
+  : Create a configurable curation Shiny application.
+- [`curation_apply_selection()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_apply_selection.md)
+  : Apply a configuration's selection callback to records.
+- [`curation_artifact_active_model()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_artifact_active_model.md)
+  : Read the active model reference.
+- [`curation_artifact_list_models()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_artifact_list_models.md)
+  : List immutable model versions.
+- [`curation_artifact_list_samples()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_artifact_list_samples.md)
+  : List project/reviewer-scoped samples.
+- [`curation_artifact_publish_model()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_artifact_publish_model.md)
+  : Atomically publish an immutable model as active.
+- [`curation_artifact_read_model()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_artifact_read_model.md)
+  : Read an immutable model version.
+- [`curation_artifact_read_sample()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_artifact_read_sample.md)
+  : Read one immutable sample.
+- [`curation_artifact_read_snapshot()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_artifact_read_snapshot.md)
+  : Read a versioned corpus snapshot.
+- [`curation_artifact_store()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_artifact_store.md)
+  : Build an injected artifact-store contract.
+- [`curation_artifact_store_sqlite()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_artifact_store_sqlite.md)
+  : Build the concrete SQLite/RDS curation artifact store.
+- [`curation_artifact_write_model()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_artifact_write_model.md)
+  : Write an immutable model version.
+- [`curation_artifact_write_sample()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_artifact_write_sample.md)
+  : Write a project/reviewer-scoped sample.
+- [`curation_artifact_write_snapshot()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_artifact_write_snapshot.md)
+  : Write a versioned corpus snapshot.
+- [`curation_auth_assert_mutation_origin()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_auth_assert_mutation_origin.md)
+  : Require the exact HTTPS origin for a state-changing request.
+- [`curation_auth_authenticate()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_auth_authenticate.md)
+  [`curation_auth_login()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_auth_authenticate.md)
+  : Authenticate a username with one authenticator-app TOTP code.
+- [`curation_auth_cookie_header()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_auth_cookie_header.md)
+  : Render the Secure, HttpOnly session cookie used by the auth gate.
+- [`curation_auth_enroll_account()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_auth_enroll_account.md)
+  [`curation_auth_enroll()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_auth_enroll_account.md)
+  : Enroll one explicit server account.
+- [`curation_auth_expire_cookie_header()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_auth_expire_cookie_header.md)
+  : Render a deletion header for the auth session cookie.
+- [`curation_auth_http_actor()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_auth_http_actor.md)
+  : Resolve a server-side HTTP request to its current actor.
+- [`curation_auth_http_gate()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_auth_http_gate.md)
+  : Start the loopback HTTP authentication gate.
+- [`curation_auth_logout()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_auth_logout.md)
+  : Revoke a server-side authentication session.
+- [`curation_auth_open()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_auth_open.md)
+  : Open the local SQLite account/session store.
+- [`curation_auth_request_session_token()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_auth_request_session_token.md)
+  : Extract an opaque auth cookie from a server request.
+- [`curation_auth_resolve_session()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_auth_resolve_session.md)
+  [`curation_auth_resolve_actor()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_auth_resolve_session.md)
+  : Resolve an authenticated session to the current server-owned actor.
+- [`curation_auth_set_account_enabled()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_auth_set_account_enabled.md)
+  : Enable or disable an enrolled account and revoke its sessions.
+- [`curation_auth_shiny_actor()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_auth_shiny_actor.md)
+  : Resolve a Shiny session to its current authenticated actor.
+- [`curation_auth_shiny_actor_resolver()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_auth_shiny_actor_resolver.md)
+  : Build the authenticated actor resolver used by the Shiny app.
+- [`curation_auth_totp_code()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_auth_totp_code.md)
+  : Calculate an RFC 6238 TOTP code from a base32 account secret.
+- [`curation_build_review_queue()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_build_review_queue.md)
+  : Build a reviewer-aware validation or fresh-review queue.
+- [`curation_compute_funnel()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_compute_funnel.md)
+  : Compute configured funnel-stage counts.
+- [`curation_config()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_config.md)
+  : Build a configuration for the generic curation services.
+- [`curation_config_fingerprint()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_config_fingerprint.md)
+  : Fingerprint a curation configuration's policy content.
+- [`curation_country_label_counts()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_country_label_counts.md)
+  [`curation_review_progress()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_country_label_counts.md)
+  : Summarise country-level review progress.
+- [`curation_draw_random_sample()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_draw_random_sample.md)
+  : Draw a reproducible, country-stratified random sample.
+- [`curation_enrich_records()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_enrich_records.md)
+  : Enrich a corpus frame with the scalar curation signals.
+- [`curation_inter_reviewer_summary()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_inter_reviewer_summary.md)
+  : Summarise unanimous agreement across reviewers.
+- [`curation_learning_curve()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_learning_curve.md)
+  [`curation_compute_learning_curve()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_learning_curve.md)
+  : Compute a held-out learning curve with explicit curation
+  configuration.
+- [`curation_load_model()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_load_model.md)
+  : Load a legacy-compatible curation model artifact.
+- [`curation_model_metrics()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_model_metrics.md)
+  : Compute stored out-of-fold model metrics through the existing API.
+- [`curation_predict_model()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_predict_model.md)
+  : Predict with a curation selection model after validating
+  configuration.
+- [`curation_publish_model()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_publish_model.md)
+  : Write and atomically publish a model through an injected C3 artifact
+  store.
+- [`curation_records_provider()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_records_provider.md)
+  : Build an injected curation record provider.
+- [`curation_records_provider_cache()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_records_provider_cache.md)
+  : Build a planscanR cache-backed record provider.
+- [`curation_records_read()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_records_read.md)
+  : Read records from an injected provider.
+- [`curation_records_refresh()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_records_refresh.md)
+  : Refresh records through an injected provider.
+- [`curation_records_snapshot()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_records_snapshot.md)
+  [`curation_build_snapshot()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_records_snapshot.md)
+  : Read and enrich a corpus snapshot through an injected provider.
+- [`curation_resolve_actor()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_resolve_actor.md)
+  : Resolve the authenticated actor for a request.
+- [`curation_review_bulk_upsert()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_review_bulk_upsert.md)
+  : Atomically upsert multiple review decisions.
+- [`curation_review_clear()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_review_clear.md)
+  : Clear one review decision while preserving its revisioned tombstone.
+- [`curation_review_export()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_review_export.md)
+  : Export review rows through the repository.
+- [`curation_review_import()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_review_import.md)
+  : Import legacy or exported review rows through the repository.
+- [`curation_review_key()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_review_key.md)
+  : Build the composite key for one reviewer's decision on one record.
+- [`curation_review_list()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_review_list.md)
+  : List review decisions through the injected repository.
+- [`curation_review_read()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_review_read.md)
+  : Read one review decision through the injected repository.
+- [`curation_review_repository()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_review_repository.md)
+  : Build an injected review-repository contract.
+- [`curation_review_repository_sqlite()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_review_repository_sqlite.md)
+  [`curation_sqlite_review_repository()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_review_repository_sqlite.md)
+  : Open a file-backed SQLite review repository.
+- [`curation_review_upsert()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_review_upsert.md)
+  : Upsert one review decision with optimistic concurrency.
+- [`curation_save_model()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_save_model.md)
+  : Save a curation model through the existing selection-model
+  serializer.
+- [`curation_scope()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_scope.md)
+  : Build a scope shared by curation services.
+- [`curation_selection_learner()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_selection_learner.md)
+  : Resolve one configured learner from the existing learner registry.
+- [`curation_selection_learner_choices()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_selection_learner_choices.md)
+  : Return the configured learner choices available to a curation UI.
+- [`curation_selection_vs_human()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_selection_vs_human.md)
+  : Compare configured selection output with unanimous human decisions.
+- [`curation_snapshot_version()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_snapshot_version.md)
+  : Compute an invalidation-aware snapshot version.
+- [`curation_train_model()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_train_model.md)
+  : Train a curation selection model using explicit configuration.
+- [`curation_translate()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_translate.md)
+  : Translate one record through an optional injected provider.
+- [`curation_translation_provider()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_translation_provider.md)
+  : Build an optional translation provider.
+- [`run_curation()`](https://barthoekstra.github.io/planscanR.screen/reference/run_curation.md)
+  : Run a configurable curation Shiny application.
+
+## Acquisition
+
+Acquisition campaigns, job queue and dashboard.
+
+- [`acquisition_campaign_explain()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_campaign_explain.md)
+  : Explain campaign priority and current queue state.
+
+- [`acquisition_campaign_items()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_campaign_items.md)
+  : List campaign items and their queue state.
+
+- [`acquisition_campaign_preview()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_campaign_preview.md)
+  [`acquisition_campaign_submit_authenticated()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_campaign_preview.md)
+  [`acquisition_campaign_panel_ui()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_campaign_preview.md)
+  [`acquisition_campaign_panel_server()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_campaign_preview.md)
+  : Preview and submit an immutable acquisition campaign
+
+- [`acquisition_campaign_priority_explain()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_campaign_priority_explain.md)
+  :
+
+  Alias for
+  [`acquisition_campaign_explain()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_campaign_explain.md).
+
+- [`acquisition_campaign_priority_history()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_campaign_priority_history.md)
+  : List all priority-rule revisions for a campaign.
+
+- [`acquisition_campaign_reprioritizations()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_campaign_reprioritizations.md)
+  : List recorded reprioritization operations.
+
+- [`acquisition_campaign_reprioritize()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_campaign_reprioritize.md)
+  : Reprioritize pending campaign jobs without changing active leases.
+
+- [`acquisition_campaign_submit()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_campaign_submit.md)
+  : Submit an immutable acquisition campaign selection.
+
+- [`acquisition_campaigns()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_campaigns.md)
+  : List submitted acquisition campaigns.
+
+- [`acquisition_catalog_close()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_catalog_close.md)
+  : Close an acquisition catalog.
+
+- [`acquisition_catalog_documents()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_catalog_documents.md)
+  : List document references in the acquisition catalog.
+
+- [`acquisition_catalog_files()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_catalog_files.md)
+  : List file claims in the acquisition catalog.
+
+- [`acquisition_catalog_import_records()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_catalog_import_records.md)
+  : Import offline planscanR records into the acquisition catalog.
+
+- [`acquisition_catalog_open()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_catalog_open.md)
+  : Open the separate SQLite acquisition catalog.
+
+- [`acquisition_catalog_register_curation_model()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_catalog_register_curation_model.md)
+  : Register a published C3 curation model in the acquisition catalog
+
+- [`acquisition_catalog_register_document()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_catalog_register_document.md)
+  : Register one logical attachment reference.
+
+- [`acquisition_catalog_register_file()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_catalog_register_file.md)
+  : Register a portable file claim for a logical attachment.
+
+- [`acquisition_catalog_register_model()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_catalog_register_model.md)
+  : Register an immutable model artifact reference.
+
+- [`acquisition_catalog_register_selection()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_catalog_register_selection.md)
+  : Register an immutable selection reference.
+
+- [`acquisition_catalog_register_source()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_catalog_register_source.md)
+  : Register one source/project reference.
+
+- [`acquisition_catalog_sources()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_catalog_sources.md)
+  : List source references in the acquisition catalog.
+
+- [`acquisition_catalog_transaction()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_catalog_transaction.md)
+  : Run a short transaction against the acquisition catalog.
+
+- [`acquisition_catalog_write_project_manifest()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_catalog_write_project_manifest.md)
+  : Write a portable manifest for one catalog source/project
+
+- [`acquisition_control_apply()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_control_apply.md)
+  : Apply an authenticated, audited acquisition control action.
+
+- [`acquisition_control_audit()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_control_audit.md)
+  : List audited acquisition control actions.
+
+- [`acquisition_control_cancel()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_control_cancel.md)
+  : Cancel pending work or request a fenced safe stop for a running job.
+
+- [`acquisition_control_pause()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_control_pause.md)
+  : Pause a job or campaign after resolving an authenticated admin.
+
+- [`acquisition_control_resume()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_control_resume.md)
+  : Resume a job or campaign after resolving an authenticated admin.
+
+- [`acquisition_control_retry()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_control_retry.md)
+  : Retry eligible terminal work after resolving an authenticated admin.
+
+- [`acquisition_dashboard_app()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_dashboard_app.md)
+  : Build the standalone authenticated acquisition dashboard Shiny app.
+
+- [`acquisition_dashboard_jobs()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_dashboard_jobs.md)
+  : List a filtered, paginated acquisition queue projection.
+
+- [`acquisition_dashboard_queue()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_dashboard_queue.md)
+  :
+
+  Alias for
+  [`acquisition_dashboard_jobs()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_dashboard_jobs.md).
+
+- [`acquisition_dashboard_server()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_dashboard_server.md)
+  : Run the server portion of the namespaced acquisition dashboard
+  module.
+
+- [`acquisition_dashboard_summary()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_dashboard_summary.md)
+  : Return database-derived acquisition status, progress, and heartbeat
+  data.
+
+- [`acquisition_queue_attempts()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_queue_attempts.md)
+  : List durable acquisition attempts.
+
+- [`acquisition_queue_audit_cache()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_queue_audit_cache.md)
+  : Audit cache files for verified, unverified, and interrupted
+  publications.
+
+- [`acquisition_queue_claim()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_queue_claim.md)
+  : Claim one available job with a unique expiring lease token.
+
+- [`acquisition_queue_complete()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_queue_complete.md)
+  : Complete a current queue attempt, fenced by token and lease expiry.
+
+- [`acquisition_queue_enqueue()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_queue_enqueue.md)
+  : Enqueue one durable acquisition job.
+
+- [`acquisition_queue_enqueue_ingestion()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_queue_enqueue_ingestion.md)
+  : Enqueue ingestion for one verified immutable file version.
+
+- [`acquisition_queue_heartbeat()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_queue_heartbeat.md)
+  : Heartbeat a current, unexpired queue lease.
+
+- [`acquisition_queue_jobs()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_queue_jobs.md)
+  : List durable acquisition jobs.
+
+- [`acquisition_queue_reconcile_file()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_queue_reconcile_file.md)
+  : Reconcile a verified catalog file and synchronize its source
+  sidecar.
+
+- [`acquisition_queue_reconcile_job()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_queue_reconcile_job.md)
+  : Recover an exhausted download job from its existing publication
+  receipt.
+
+- [`acquisition_queue_recover()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_queue_recover.md)
+  : Recover expired leases and make them retryable or exhausted.
+
+- [`acquisition_queue_set_host_limit()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_queue_set_host_limit.md)
+  : Set one persisted shared host concurrency and cooldown limit.
+
+- [`acquisition_queue_sync_sidecar()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_queue_sync_sidecar.md)
+  : Synchronize one verified catalog download into its source sidecar.
+
+- [`acquisition_storage_enqueue_relocation()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_storage_enqueue_relocation.md)
+  : Request an asynchronous storage relocation.
+
+- [`acquisition_storage_register_root()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_storage_register_root.md)
+  : Register or update one validated local storage root.
+
+- [`acquisition_storage_relocations()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_storage_relocations.md)
+  : List durable storage relocation requests.
+
+- [`acquisition_storage_reservations()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_storage_reservations.md)
+  : List disk reservations.
+
+- [`acquisition_storage_resolve_location()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_storage_resolve_location.md)
+  : Resolve a catalog storage location on this machine
+
+- [`acquisition_storage_rollback_relocation()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_storage_rollback_relocation.md)
+  : Roll back migrated sidecar references to the retained verified
+  source copies
+
+- [`acquisition_storage_roots()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_storage_roots.md)
+  : List registered storage roots.
+
+- [`acquisition_storage_set()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_storage_set.md)
+  : Append a versioned acquisition setting.
+
+- [`acquisition_storage_settings()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_storage_settings.md)
+  : List versioned acquisition settings.
+
+- [`acquisition_worker_health_configure()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_worker_health.md)
+  [`acquisition_worker_health_start()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_worker_health.md)
+  [`acquisition_worker_health_heartbeat()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_worker_health.md)
+  [`acquisition_worker_health_stop()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_worker_health.md)
+  [`acquisition_worker_health_status()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_worker_health.md)
+  : Persisted independent acquisition worker health
+
+- [`acquisition_worker_run()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_worker_run.md)
+  : Run supervised acquisition workers outside Shiny.
+
+- [`run_acquisition_dashboard()`](https://barthoekstra.github.io/planscanR.screen/reference/run_acquisition_dashboard.md)
+  : Run the standalone acquisition dashboard.
+
 ## Package
 
 - [`planscanR.screen`](https://barthoekstra.github.io/planscanR.screen/reference/planscanR.screen-package.md)

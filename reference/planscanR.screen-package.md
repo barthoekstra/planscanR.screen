@@ -49,3 +49,7 @@ Useful links:
 ## Author
 
 **Maintainer**: Bart Hoekstra <mail@barthoekstra.nl>
+
+Authors:
+
+- Bart Hoekstra <mail@barthoekstra.nl>

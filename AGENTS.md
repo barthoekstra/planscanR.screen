@@ -150,6 +150,18 @@ Parent-level orientation:
 
 ## Contracts you must not break
 
+### Generic curation ownership
+
+This package owns reusable, configuration-driven curation services:
+record providers, review queues and sampling, review repository
+interfaces, metrics, and model workflows. Callers supply topics, labels,
+lexicons, stage definitions, and selection policy. BIOGAIN-specific
+energy policy, labels, lexicon, ensemble decision, branding, and
+compatibility adapters belong in `planscanR.biogain`. The existing
+review app remains in BIOGAIN through ACQ-C4; extraction proceeds
+through ACQ-C1–C3 and the BIOGAIN launcher changes only after C4 parity
+and acceptance. `planscanR.screen` must not import `planscanR.biogain`.
+
 - **Sidecar I/O is owned by `planscanR`.** Read/write via
   [`planscanR::read_record_sidecar()`](https://barthoekstra.github.io/planscanR/reference/read_record_sidecar.html)
   /
@@ -216,3 +228,9 @@ Parent-level orientation:
   [`predict_selection()`](https://barthoekstra.github.io/planscanR.screen/reference/predict_selection.md).
 - BIOGAIN-specific wiring (ensemble rule, runbook, review app): the
   `planscanR.biogain` repo, not here.
+
+## Commit messages
+
+Follow the repository’s existing commit-message style. Never add AI
+authorship or attribution text, such as “Authored by Claude”, “Generated
+by Codex”, or AI co-author trailers, to commit subjects or bodies.
