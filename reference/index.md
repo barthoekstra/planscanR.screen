@@ -250,11 +250,15 @@ Acquisition campaigns, job queue and dashboard.
 - [`acquisition_campaign_items()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_campaign_items.md)
   : List campaign items and their queue state.
 
+- [`acquisition_campaign_panel_server()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_campaign_panel_server.md)
+  : Run the optional Acquisition campaign preview/submission module.
+
+- [`acquisition_campaign_panel_ui()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_campaign_panel_ui.md)
+  : Build the optional Acquisition campaign preview panel.
+
 - [`acquisition_campaign_preview()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_campaign_preview.md)
-  [`acquisition_campaign_submit_authenticated()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_campaign_preview.md)
-  [`acquisition_campaign_panel_ui()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_campaign_preview.md)
-  [`acquisition_campaign_panel_server()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_campaign_preview.md)
-  : Preview and submit an immutable acquisition campaign
+  : Preview an immutable model-driven campaign without writing catalog
+  state.
 
 - [`acquisition_campaign_priority_explain()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_campaign_priority_explain.md)
   :
@@ -273,6 +277,9 @@ Acquisition campaigns, job queue and dashboard.
 
 - [`acquisition_campaign_submit()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_campaign_submit.md)
   : Submit an immutable acquisition campaign selection.
+
+- [`acquisition_campaign_submit_authenticated()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_campaign_submit_authenticated.md)
+  : Submit a campaign after resolving the current authenticated admin.
 
 - [`acquisition_campaigns()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_campaigns.md)
   : List submitted acquisition campaigns.
@@ -293,7 +300,7 @@ Acquisition campaigns, job queue and dashboard.
   : Open the separate SQLite acquisition catalog.
 
 - [`acquisition_catalog_register_curation_model()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_catalog_register_curation_model.md)
-  : Register a published C3 curation model in the acquisition catalog
+  : Register a published C3 model in the acquisition catalog.
 
 - [`acquisition_catalog_register_document()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_catalog_register_document.md)
   : Register one logical attachment reference.
@@ -427,12 +434,20 @@ Acquisition campaigns, job queue and dashboard.
 - [`acquisition_storage_settings()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_storage_settings.md)
   : List versioned acquisition settings.
 
-- [`acquisition_worker_health_configure()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_worker_health.md)
-  [`acquisition_worker_health_start()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_worker_health.md)
-  [`acquisition_worker_health_heartbeat()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_worker_health.md)
-  [`acquisition_worker_health_stop()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_worker_health.md)
-  [`acquisition_worker_health_status()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_worker_health.md)
-  : Persisted independent acquisition worker health
+- [`acquisition_worker_health_configure()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_worker_health_configure.md)
+  : Configure the expected independent acquisition workers.
+
+- [`acquisition_worker_health_heartbeat()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_worker_health_heartbeat.md)
+  : Record an independent worker heartbeat.
+
+- [`acquisition_worker_health_start()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_worker_health_start.md)
+  : Record a worker startup and initial idle heartbeat.
+
+- [`acquisition_worker_health_status()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_worker_health_status.md)
+  : Read bounded independent worker health.
+
+- [`acquisition_worker_health_stop()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_worker_health_stop.md)
+  : Record a graceful stop or worker error.
 
 - [`acquisition_worker_run()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_worker_run.md)
   : Run supervised acquisition workers outside Shiny.

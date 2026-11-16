@@ -15,6 +15,7 @@ run_curation(
   launch.browser = interactive(),
   actor_probe = NULL,
   logout_path = NULL,
+  acquisition = NULL,
   historical_reviews = NULL,
   input_provenance = NULL,
   cohort_receipt = NULL,
@@ -64,6 +65,11 @@ run_curation(
 
   Optional local POST path rendered as a visible Log out control, for
   example `/app/logout`. It is absent by default.
+
+- acquisition:
+
+  Optional acquisition service configuration passed to
+  [`curation_app()`](https://barthoekstra.github.io/planscanR.screen/reference/curation_app.md).
 
 - historical_reviews:
 

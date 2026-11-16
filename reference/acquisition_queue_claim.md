@@ -29,6 +29,10 @@ acquisition_queue_claim(
 
   Lease duration.
 
+- kinds:
+
+  Optional job-kind filter. Defaults to all supported kinds.
+
 ## Value
 
 A claim row with `ok`, `job_id`, `attempt_no`, `lease_token`, and job

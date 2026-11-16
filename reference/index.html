@@ -792,10 +792,24 @@
 
         <dt>
 
-          <code><a href="acquisition_campaign_preview.html">acquisition_campaign_preview()</a></code> <code><a href="acquisition_campaign_preview.html">acquisition_campaign_submit_authenticated()</a></code> <code><a href="acquisition_campaign_preview.html">acquisition_campaign_panel_ui()</a></code> <code><a href="acquisition_campaign_preview.html">acquisition_campaign_panel_server()</a></code>
+          <code><a href="acquisition_campaign_panel_server.html">acquisition_campaign_panel_server()</a></code>
 
         </dt>
-        <dd>Preview and submit an immutable acquisition campaign</dd>
+        <dd>Run the optional Acquisition campaign preview/submission module.</dd>
+
+        <dt>
+
+          <code><a href="acquisition_campaign_panel_ui.html">acquisition_campaign_panel_ui()</a></code>
+
+        </dt>
+        <dd>Build the optional Acquisition campaign preview panel.</dd>
+
+        <dt>
+
+          <code><a href="acquisition_campaign_preview.html">acquisition_campaign_preview()</a></code>
+
+        </dt>
+        <dd>Preview an immutable model-driven campaign without writing catalog state.</dd>
 
         <dt>
 
@@ -831,6 +845,13 @@
 
         </dt>
         <dd>Submit an immutable acquisition campaign selection.</dd>
+
+        <dt>
+
+          <code><a href="acquisition_campaign_submit_authenticated.html">acquisition_campaign_submit_authenticated()</a></code>
+
+        </dt>
+        <dd>Submit a campaign after resolving the current authenticated admin.</dd>
 
         <dt>
 
@@ -879,7 +900,7 @@
           <code><a href="acquisition_catalog_register_curation_model.html">acquisition_catalog_register_curation_model()</a></code>
 
         </dt>
-        <dd>Register a published C3 curation model in the acquisition catalog</dd>
+        <dd>Register a published C3 model in the acquisition catalog.</dd>
 
         <dt>
 
@@ -1170,10 +1191,38 @@
 
         <dt>
 
-          <code><a href="acquisition_worker_health.html">acquisition_worker_health_configure()</a></code> <code><a href="acquisition_worker_health.html">acquisition_worker_health_start()</a></code> <code><a href="acquisition_worker_health.html">acquisition_worker_health_heartbeat()</a></code> <code><a href="acquisition_worker_health.html">acquisition_worker_health_stop()</a></code> <code><a href="acquisition_worker_health.html">acquisition_worker_health_status()</a></code>
+          <code><a href="acquisition_worker_health_configure.html">acquisition_worker_health_configure()</a></code>
 
         </dt>
-        <dd>Persisted independent acquisition worker health</dd>
+        <dd>Configure the expected independent acquisition workers.</dd>
+
+        <dt>
+
+          <code><a href="acquisition_worker_health_heartbeat.html">acquisition_worker_health_heartbeat()</a></code>
+
+        </dt>
+        <dd>Record an independent worker heartbeat.</dd>
+
+        <dt>
+
+          <code><a href="acquisition_worker_health_start.html">acquisition_worker_health_start()</a></code>
+
+        </dt>
+        <dd>Record a worker startup and initial idle heartbeat.</dd>
+
+        <dt>
+
+          <code><a href="acquisition_worker_health_status.html">acquisition_worker_health_status()</a></code>
+
+        </dt>
+        <dd>Read bounded independent worker health.</dd>
+
+        <dt>
+
+          <code><a href="acquisition_worker_health_stop.html">acquisition_worker_health_stop()</a></code>
+
+        </dt>
+        <dd>Record a graceful stop or worker error.</dd>
 
         <dt>
 

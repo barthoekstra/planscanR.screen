@@ -10,8 +10,11 @@ run_acquisition_dashboard(
   actor_resolver,
   request = NULL,
   actor_probe = NULL,
+  preview = NULL,
+  submit_fn = acquisition_campaign_submit_authenticated,
   refresh_ms = 2000L,
   page_size = 50L,
+  storage_context = NULL,
   launch.browser = interactive(),
   ...
 )
@@ -36,6 +39,15 @@ run_acquisition_dashboard(
 
   Optional non-touching resolver used for session checks.
 
+- preview:
+
+  Optional campaign preview input passed to the acquisition campaign
+  panel.
+
+- submit_fn:
+
+  Authenticated campaign submission function.
+
 - refresh_ms:
 
   Database refresh interval in milliseconds.
@@ -43,6 +55,10 @@ run_acquisition_dashboard(
 - page_size:
 
   Queue rows shown per refresh.
+
+- storage_context:
+
+  Optional explicit state/cache storage context.
 
 - launch.browser:
 

@@ -54,9 +54,12 @@ not affect worker continuity.</p>
 <span>  <span class="va">actor_resolver</span>,</span>
 <span>  request <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  actor_probe <span class="op">=</span> <span class="cn">NULL</span>,</span>
+<span>  preview <span class="op">=</span> <span class="cn">NULL</span>,</span>
+<span>  submit_fn <span class="op">=</span> <span class="va">acquisition_campaign_submit_authenticated</span>,</span>
 <span>  refresh_ms <span class="op">=</span> <span class="fl">2000L</span>,</span>
 <span>  page_size <span class="op">=</span> <span class="fl">50L</span>,</span>
-<span>  target_limit <span class="op">=</span> <span class="fl">100L</span></span>
+<span>  target_limit <span class="op">=</span> <span class="fl">100L</span>,</span>
+<span>  storage_context <span class="op">=</span> <span class="cn">NULL</span></span>
 <span><span class="op">)</span></span></code></pre></div>
     </div>
 
@@ -80,6 +83,15 @@ not affect worker continuity.</p>
 <dd><p>Optional non-touching resolver used for session checks.</p></dd>
 
 
+<dt id="arg-preview">preview<a class="anchor" aria-label="anchor" href="#arg-preview"></a></dt>
+<dd><p>Optional campaign preview input passed to the acquisition
+campaign panel.</p></dd>
+
+
+<dt id="arg-submit-fn">submit_fn<a class="anchor" aria-label="anchor" href="#arg-submit-fn"></a></dt>
+<dd><p>Authenticated campaign submission function.</p></dd>
+
+
 <dt id="arg-refresh-ms">refresh_ms<a class="anchor" aria-label="anchor" href="#arg-refresh-ms"></a></dt>
 <dd><p>Database refresh interval in milliseconds.</p></dd>
 
@@ -89,7 +101,11 @@ not affect worker continuity.</p>
 
 
 <dt id="arg-target-limit">target_limit<a class="anchor" aria-label="anchor" href="#arg-target-limit"></a></dt>
-<dd><p>Maximum number of job or campaign control targets shown.</p></dd>
+<dd><p>Maximum number of control targets shown.</p></dd>
+
+
+<dt id="arg-storage-context">storage_context<a class="anchor" aria-label="anchor" href="#arg-storage-context"></a></dt>
+<dd><p>Optional explicit state/cache storage context.</p></dd>
 
 </dl></div>
     <div class="section level2">

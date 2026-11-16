@@ -1,15 +1,19 @@
-# Register a published C3 curation model in the acquisition catalog
+# Register a published C3 model in the acquisition catalog.
 
-Reads the published immutable model artifact, copies it through the
-existing acquisition registry, and preserves its artifact hash and input
-snapshot.
+The model file is copied and fingerprinted by the existing catalog
+registry; this helper only connects the two immutable artifact stores.
 
 ## Usage
 
 ``` r
 acquisition_catalog_register_curation_model(
-  catalog, artifact_store, scope, model_id, actor,
-  input_snapshot_id = NULL, metadata = NULL
+  catalog,
+  artifact_store,
+  scope,
+  model_id,
+  actor,
+  input_snapshot_id = NULL,
+  metadata = NULL
 )
 ```
 
@@ -17,28 +21,27 @@ acquisition_catalog_register_curation_model(
 
 - catalog:
 
-  A catalog from
-  [`acquisition_catalog_open()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_catalog_open.md).
+  Acquisition catalog.
 
 - artifact_store:
 
-  A C3 curation artifact store.
+  Published curation artifact store.
 
 - scope:
 
-  The immutable curation scope.
+  Immutable curation scope.
 
 - model_id:
 
-  Published C3 model identifier.
+  Published model identifier.
 
 - actor:
 
-  Trusted authenticated actor allowed to read the artifact.
+  Trusted actor allowed to read the model artifact.
 
 - input_snapshot_id:
 
-  Optional override for the model input snapshot identity.
+  Optional override for the model input snapshot.
 
 - metadata:
 
@@ -46,5 +49,4 @@ acquisition_catalog_register_curation_model(
 
 ## Value
 
-A model reference returned by
-[`acquisition_catalog_register_model()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_catalog_register_model.md).
+A registered model reference.

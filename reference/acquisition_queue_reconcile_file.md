@@ -1,7 +1,7 @@
 # Reconcile a verified catalog file and synchronize its source sidecar.
 
-Only `planscan-cache` locations are resolved by this compact service. A
-legacy or unverified claim is reported without promoting its bytes.
+Registered storage roots are resolved through the catalog. A legacy or
+unverified claim is reported without promoting its bytes.
 
 ## Usage
 

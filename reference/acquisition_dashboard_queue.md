@@ -8,3 +8,10 @@ Alias for
 ``` r
 acquisition_dashboard_queue(...)
 ```
+
+## Arguments
+
+- ...:
+
+  Additional filters passed to
+  [`acquisition_dashboard_jobs()`](https://barthoekstra.github.io/planscanR.screen/reference/acquisition_dashboard_jobs.md).

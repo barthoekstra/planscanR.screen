@@ -53,6 +53,7 @@
 <span>  launch.browser <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/interactive.html" class="external-link">interactive</a></span><span class="op">(</span><span class="op">)</span>,</span>
 <span>  actor_probe <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  logout_path <span class="op">=</span> <span class="cn">NULL</span>,</span>
+<span>  acquisition <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  historical_reviews <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  input_provenance <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  cohort_receipt <span class="op">=</span> <span class="cn">NULL</span>,</span>
@@ -104,6 +105,11 @@ socket-expiry check. Mutation paths always use <code>actor_resolver</code>.</p><
 control, for example <code>/app/logout</code>. It is absent by default.</p></dd>
 
 
+<dt id="arg-acquisition">acquisition<a class="anchor" aria-label="anchor" href="#arg-acquisition"></a></dt>
+<dd><p>Optional acquisition service configuration passed to
+<code><a href="curation_app.html">curation_app()</a></code>.</p></dd>
+
+
 <dt id="arg-historical-reviews">historical_reviews<a class="anchor" aria-label="anchor" href="#arg-historical-reviews"></a></dt>
 <dd><p>Optional data frame of imported historical review
 linkage and attribution rows. Unresolved rows are shown read-only.</p></dd>
@@ -111,8 +117,8 @@ linkage and attribution rows. Unresolved rows are shown read-only.</p></dd>
 
 <dt id="arg-input-provenance">input_provenance<a class="anchor" aria-label="anchor" href="#arg-input-provenance"></a></dt>
 <dd><p>Optional BIOGAIN or caller-supplied identity for the
-compatible scored input. The app adds the loaded snapshot identity and content
-fingerprint before training.</p></dd>
+compatible scored input. The app adds the loaded snapshot identity and
+content fingerprint before training.</p></dd>
 
 
 <dt id="arg-cohort-receipt">cohort_receipt<a class="anchor" aria-label="anchor" href="#arg-cohort-receipt"></a></dt>

@@ -48,8 +48,11 @@
 <span>  <span class="va">actor_resolver</span>,</span>
 <span>  request <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  actor_probe <span class="op">=</span> <span class="cn">NULL</span>,</span>
+<span>  preview <span class="op">=</span> <span class="cn">NULL</span>,</span>
+<span>  submit_fn <span class="op">=</span> <span class="va">acquisition_campaign_submit_authenticated</span>,</span>
 <span>  refresh_ms <span class="op">=</span> <span class="fl">2000L</span>,</span>
 <span>  page_size <span class="op">=</span> <span class="fl">50L</span>,</span>
+<span>  storage_context <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  launch.browser <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/interactive.html" class="external-link">interactive</a></span><span class="op">(</span><span class="op">)</span>,</span>
 <span>  <span class="va">...</span></span>
 <span><span class="op">)</span></span></code></pre></div>
@@ -75,12 +78,25 @@
 <dd><p>Optional non-touching resolver used for session checks.</p></dd>
 
 
+<dt id="arg-preview">preview<a class="anchor" aria-label="anchor" href="#arg-preview"></a></dt>
+<dd><p>Optional campaign preview input passed to the acquisition
+campaign panel.</p></dd>
+
+
+<dt id="arg-submit-fn">submit_fn<a class="anchor" aria-label="anchor" href="#arg-submit-fn"></a></dt>
+<dd><p>Authenticated campaign submission function.</p></dd>
+
+
 <dt id="arg-refresh-ms">refresh_ms<a class="anchor" aria-label="anchor" href="#arg-refresh-ms"></a></dt>
 <dd><p>Database refresh interval in milliseconds.</p></dd>
 
 
 <dt id="arg-page-size">page_size<a class="anchor" aria-label="anchor" href="#arg-page-size"></a></dt>
 <dd><p>Queue rows shown per refresh.</p></dd>
+
+
+<dt id="arg-storage-context">storage_context<a class="anchor" aria-label="anchor" href="#arg-storage-context"></a></dt>
+<dd><p>Optional explicit state/cache storage context.</p></dd>
 
 
 <dt id="arg-launch-browser">launch.browser<a class="anchor" aria-label="anchor" href="#arg-launch-browser"></a></dt>

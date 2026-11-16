@@ -13,10 +13,13 @@ acquisition_dashboard_server(
   actor_resolver,
   request = NULL,
   actor_probe = NULL,
+  preview = NULL,
+  submit_fn = acquisition_campaign_submit_authenticated,
   refresh_ms = 2000L,
   page_size = 50L,
   active = NULL,
-  target_limit = 100L
+  target_limit = 100L,
+  storage_context = NULL
 )
 ```
 
@@ -43,6 +46,15 @@ acquisition_dashboard_server(
 
   Optional non-touching resolver used for session checks.
 
+- preview:
+
+  Optional campaign preview input passed to the acquisition campaign
+  panel.
+
+- submit_fn:
+
+  Authenticated campaign submission function.
+
 - refresh_ms:
 
   Database refresh interval in milliseconds.
@@ -59,6 +71,10 @@ acquisition_dashboard_server(
 - target_limit:
 
   Maximum number of job or campaign control targets shown.
+
+- storage_context:
+
+  Optional explicit state/cache storage context.
 
 ## Value
 
