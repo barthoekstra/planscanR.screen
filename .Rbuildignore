@@ -12,3 +12,4 @@
 ^\.styler\.R$
 ^scripts$
 ^\.claude$
+^_site$
